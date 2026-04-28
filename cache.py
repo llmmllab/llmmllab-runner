@@ -2,7 +2,15 @@
 Server cache for llmmllab-runner.
 
 Manages registry of active llama.cpp server instances with use-count tracking
-and idle eviction.
+and two-tier idle eviction:
+
+  - CACHE_TIMEOUT_MIN (soft):  server becomes *eligible* for eviction when
+    idle for this long.  Used when VRAM pressure requires freeing space.
+  - EVICTION_TIMEOUT_MIN (hard): server *must* be evicted once idle for this
+    long, regardless of VRAM pressure.
+
+Both timers start when the last client releases the server (use_count drops to 0)
+and reset when a new client acquires it (use_count goes above 0).
 """
 
 import threading
@@ -11,9 +19,9 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
-from utils.logging import llmmllogger
+from config import CACHE_TIMEOUT_MIN, EVICTION_TIMEOUT_MIN
 
-from config import PIPELINE_CACHE_TIMEOUT_MIN
+from utils.logging import llmmllogger
 
 logger = llmmllogger.bind(component="ServerCache")
 
@@ -27,6 +35,8 @@ class _ServerEntry:
     created_at: float = field(default_factory=time.time)
     healthy: bool = True
     manager: object = None  # LlamaCppServerManager instance
+    # Set to time.time() when use_count drops to 0; None while in use.
+    idle_since: Optional[float] = None
 
 
 class ServerCache:
@@ -60,38 +70,64 @@ class ServerCache:
             return self._servers.get(server_id)
 
     def increment_use(self, server_id: str) -> bool:
-        """Increment use count. Returns False if server not found."""
+        """Increment use count and clear idle timer. Returns False if not found."""
         with self._lock:
             entry = self._servers.get(server_id)
             if not entry:
                 return False
             entry.use_count += 1
-            return True
+            entry.idle_since = None
+        return True
 
     def decrement_use(self, server_id: str) -> bool:
-        """Decrement use count. Returns False if server not found."""
+        """Decrement use count. Sets idle_since when count drops to 0."""
         with self._lock:
             entry = self._servers.get(server_id)
             if not entry:
                 return False
             entry.use_count = max(0, entry.use_count - 1)
-            return True
+            if entry.use_count == 0:
+                entry.idle_since = time.time()
+        return True
+
+    # ------------------------------------------------------------------
+    # Soft eviction — returns servers eligible for eviction under VRAM
+    # pressure (idle longer than CACHE_TIMEOUT_MIN).
+    # ------------------------------------------------------------------
+
+    def get_eligible_for_eviction(self) -> List[_ServerEntry]:
+        """Return idle servers that exceed the soft cache timeout.
+
+        These servers *may* be evicted when VRAM pressure requires space for a
+        new model.  Callers are responsible for actually stopping and removing
+        them.  Does NOT mutate the cache.
+        """
+        cutoff = time.time() - CACHE_TIMEOUT_MIN * 60
+        eligible = []
+        with self._lock:
+            for entry in self._servers.values():
+                if entry.idle_since is not None and entry.idle_since <= cutoff:
+                    eligible.append(entry)
+        return eligible
+
+    # ------------------------------------------------------------------
+    # Hard eviction — removes servers that exceed EVICTION_TIMEOUT_MIN.
+    # ------------------------------------------------------------------
 
     def evict_idle(self) -> List[str]:
-        """Remove servers that have been idle (use_count == 0) beyond timeout.
+        """Remove servers that have been idle beyond the hard eviction timeout.
 
         Returns list of evicted server_ids.
         """
-        timeout_sec = PIPELINE_CACHE_TIMEOUT_MIN * 60
-        now = time.time()
+        cutoff = time.time() - EVICTION_TIMEOUT_MIN * 60
         evicted = []
         with self._lock:
             for server_id, entry in list(self._servers.items()):
-                if entry.use_count == 0 and (now - entry.created_at) > timeout_sec:
+                if entry.idle_since is not None and entry.idle_since <= cutoff:
                     evicted.append(server_id)
                     del self._servers[server_id]
         for server_id in evicted:
-            logger.info(f"Evicted idle server {server_id}")
+            logger.info(f"Hard-evicted idle server {server_id}")
         return evicted
 
     def remove(self, server_id: str) -> Optional[_ServerEntry]:
@@ -115,6 +151,7 @@ class ServerCache:
                         "use_count": e.use_count,
                         "healthy": e.healthy,
                         "created_at": e.created_at,
+                        "idle_since": e.idle_since,
                     }
                     for e in self._servers.values()
                 ],
