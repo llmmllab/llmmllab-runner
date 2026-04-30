@@ -15,6 +15,9 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import Response, StreamingResponse
 
 from config import PROXY_TIMEOUT
+from utils.logging import llmmllogger
+
+logger = llmmllogger.bind(component="proxy_router")
 
 router = APIRouter()
 
@@ -81,15 +84,35 @@ async def proxy_request(request: Request, server_id: str, path: str):
     if not entry:
         raise HTTPException(status_code=404, detail=f"Server {server_id} not found")
 
+    target_host = f"http://127.0.0.1:{entry.port}"
+
+    # Reject chat completion requests when all slots are busy to prevent
+    # request queueing that causes cascading timeouts with --parallel 1.
+    remaining = path
+    if "chat/completions" in remaining:
+        try:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(2.0)) as check_client:
+                slots_resp = await check_client.get(f"{target_host}/slots")
+                if slots_resp.status_code == 200:
+                    slots = slots_resp.json()
+                    all_busy = all(s.get("is_processing", False) for s in slots)
+                    if all_busy:
+                        logger.warning("All slots busy, rejecting request")
+                        raise HTTPException(
+                            status_code=503,
+                            detail="All inference slots are busy",
+                        )
+        except HTTPException:
+            raise
+        except Exception:
+            pass  # If /slots check fails, proceed normally
+
     # Mark server as in-use during request
     server_cache.increment_use(server_id)
     is_streaming = False
 
     try:
-        target_host = f"http://127.0.0.1:{entry.port}"
-
         # Rewrite path: strip the /v1/server/{id} prefix
-        remaining = path
         upstream_url = f"{target_host}/{remaining}"
 
         # Read request body
