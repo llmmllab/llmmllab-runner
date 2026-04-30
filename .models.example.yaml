@@ -1,0 +1,41 @@
+- id: Qwen3_5_0_8B
+  name: "Qwen3.5-0.8B"
+  model: "Qwen3.5-0.8B"
+  task: TextToText
+  modified_at: "2026-04-03T17:42:00.692848+00:00"
+  digest: 8f0cb1e8e058e45c7d9676fcd4da2f08eb62ff537da747a6ffc7157c1f6a5684
+  size: 771092736
+  details:
+    format: gguf
+    gguf_file: "/models/qwen3.5/0.8b/q4_k_m.gguf"
+    family: qwen
+    families:
+      - qwen
+    parameter_size: 752.4M
+    quantization_level: Q4_K_M
+    precision: int4
+    dtype: int4
+    specialization: Text
+    size: 771092736
+    original_ctx: 2048
+  parameters:
+    num_ctx: 50000
+    repeat_last_n: 256
+    repeat_penalty: 1.1
+    temperature: 0.7
+    seed: -1
+    num_predict: -1
+    top_k: 20
+    top_p: 0.95
+    min_p: 0.05
+    max_tokens: 2048
+    n_parts: -1
+    batch_size: 2048
+    micro_batch_size: 1024
+    n_gpu_layers: -1
+    think: False
+    kv_on_cpu: True
+    # n_cpu_moe: 10
+  pipeline: llama
+  lora_weights: []
+  provider: llama_cpp

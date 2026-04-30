@@ -93,8 +93,6 @@ class LlamaCppArgumentBuilder:
                 "ctx_size": params.num_ctx or 90000,
                 "batch_size": params.batch_size or 2048,
                 "ubatch_size": params.micro_batch_size or (params.batch_size or 2048),
-                "reasoning": "on" if params.think else "off",
-                "reasoning_budget": 16384 if params.think else 0,
                 "ctx_checkpoints": 24,
                 "timeout": 600,
                 "context_shift": True,
@@ -148,6 +146,11 @@ class LlamaCppArgumentBuilder:
                 draft_gguf = dm.details.gguf_file if dm and dm.details else None
                 if draft_gguf:
                     config["model_draft"] = str(draft_gguf)
+
+        # Reasoning (thinking) support - only when explicitly enabled
+        if params.think:
+            config["reasoning"] = "on"
+            config["reasoning_budget"] = 16384
 
         if LOG_LEVEL.lower() == "trace":
             config["verbose"] = True

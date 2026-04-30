@@ -1,6 +1,7 @@
 import json
 import os
 import yaml
+from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 import config
@@ -8,6 +9,35 @@ import config
 from models import LoraWeight, Model, ModelDetails
 
 from utils.logging import llmmllogger
+
+
+# Precision values accepted by ModelDetails
+_VALID_PRECISIONS = {"fp32", "fp16", "bf16", "int8", "int4", "int2", "int1"}
+
+# Map common YAML precision strings to valid ModelDetails values
+_PRECISION_MAP = {
+    "int6": "int8",
+    "int64": "int8",
+    "unknown": None,
+}
+
+# Specialization values accepted by ModelDetails
+_VALID_SPECIALIZATIONS = {"LoRA", "Embedding", "TextToImage", "ImageToImage", "Audio", "Text"}
+
+_SPECIALIZATION_MAP = {
+    "ImageTextToText": "Text",
+    "TextGeneration": "Text",
+    "TextSummarization": "Text",
+    "TextToText": "Text",
+    "TextToEmbeddings": "Embedding",
+    "Vision": "Text",
+    "Text": "Text",
+    "LoRA": "LoRA",
+    "Embedding": "Embedding",
+    "TextToImage": "TextToImage",
+    "ImageToImage": "ImageToImage",
+    "Audio": "Audio",
+}
 
 
 class ModelLoader:
@@ -74,6 +104,9 @@ class ModelLoader:
             self.logger.error(f"Failed to parse models file {chosen_path}: {e}")
             return
 
+        if isinstance(models_data, dict):
+            # Support "models:" top-level key (e.g. /models/models.yaml)
+            models_data = models_data.get("models", [])
         if not isinstance(models_data, list):
             self.logger.error(
                 f"Models config {chosen_path} is not a list; ignoring contents"
@@ -132,26 +165,18 @@ class ModelLoader:
 
                 # Handle special cases for field mapping and validation
                 if field_name == "specialization":
-                    # Map invalid specialization values to valid ones
                     if value:
-                        specialization_map = {
-                            "ImageTextToText": "Text",
-                            "TextGeneration": "Text",
-                            "TextSummarization": "Text",
-                            "TextToText": "Text",
-                            "TextToEmbeddings": "Embedding",
-                            # Valid values remain unchanged
-                            "Text": "Text",
-                            "LoRA": "LoRA",
-                            "Embedding": "Embedding",
-                            "TextToImage": "TextToImage",
-                            "ImageToImage": "ImageToImage",
-                            "Audio": "Audio",
-                        }
-                        value = specialization_map.get(value, "Text")
+                        value = _SPECIALIZATION_MAP.get(str(value), "Text")
+
+                elif field_name == "precision":
+                    if value:
+                        mapped = _PRECISION_MAP.get(str(value))
+                        if mapped is not None:
+                            value = mapped
+                        elif str(value) not in _VALID_PRECISIONS:
+                            value = None
 
                 elif field_name in ["format", "family", "parameter_size", "dtype"]:
-                    # Ensure these are strings
                     value = (
                         str(value)
                         if value is not None
@@ -161,7 +186,6 @@ class ModelLoader:
                     )
 
                 elif field_name == "families":
-                    # Ensure this is a list
                     value = (
                         list(value)
                         if value is not None
@@ -171,7 +195,6 @@ class ModelLoader:
                     )
 
                 elif field_name == "weight":
-                    # Ensure this is a float
                     value = (
                         float(value)
                         if value is not None
@@ -234,6 +257,10 @@ class ModelLoader:
                     value = loras
                 else:
                     value = data.get(field_name)
+
+                    # Coerce datetime objects to ISO strings (YAML parses dates automatically)
+                    if isinstance(value, datetime):
+                        value = value.isoformat()
 
                     # Handle required fields
                     if value is None and field_info["required"]:

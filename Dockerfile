@@ -26,7 +26,7 @@ RUN git clone https://github.com/ggml-org/llama.cpp.git /llama.cpp \
 WORKDIR /llama.cpp
 RUN cmake -B build \
     -DGGML_CUDA=ON \
-    -DCMAKE_CUDA_ARCHITECTURES="86" \
+    -DCMAKE_CUDA_ARCHITECTURES="75;86" \
     -DCMAKE_BUILD_TYPE=Release \
     && cmake --build build --config Release -j6
 
@@ -81,4 +81,4 @@ COPY . ./
 
 EXPOSE 8000
 
-CMD ["uv", "run", "python", "-m", "uvicorn", "app:app", "--host", "0.0.0.0", "--port", "${RUNNER_PORT:-8000}", "--timeout-graceful-shutdown", "30"]
+CMD ["uv", "run", "python", "-m", "uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000", "--timeout-graceful-shutdown", "30"]

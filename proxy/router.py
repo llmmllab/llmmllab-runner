@@ -2,6 +2,10 @@
 
 Catch-all route for /v1/server/{server_id}/* that rewrites the path
 and forwards to the appropriate local llama.cpp server instance.
+
+Tracks server activity: increments use_count on request start, decrements
+when the response fully completes. This allows the cache eviction timer to
+fire based on actual request activity rather than external release calls.
 """
 
 import json
@@ -17,9 +21,9 @@ async def _stream_upstream(client, method, url, headers, body, server_id):
     """Stream response from upstream, keeping client open for the entire duration.
 
     Returns a StreamingResponse that maintains the upstream connection
-    until the downstream client is done consuming.
+    until the downstream client is done consuming. Decrements the server's
+    use count when the stream fully completes or is abandoned.
     """
-    from app import server_cache
 
     response = await client.send(
         client.build_request(
@@ -42,6 +46,8 @@ async def _stream_upstream(client, method, url, headers, body, server_id):
         finally:
             response.close()
             await client.aclose()
+            # Request fully consumed (or client disconnected) — mark server idle
+            from app import server_cache
             server_cache.decrement_use(server_id)
 
     return StreamingResponse(
@@ -67,8 +73,9 @@ async def proxy_request(request: Request, server_id: str, path: str):
     if not entry:
         raise HTTPException(status_code=404, detail=f"Server {server_id} not found")
 
-    # Increment use count to keep server alive during request
+    # Mark server as in-use during request
     server_cache.increment_use(server_id)
+    is_streaming = False
 
     try:
         target_host = f"http://127.0.0.1:{entry.port}"
@@ -93,7 +100,6 @@ async def proxy_request(request: Request, server_id: str, path: str):
 
         method = request.method
         client = httpx.AsyncClient(timeout=120.0)
-        streaming = False
 
         # Check if this is likely an SSE request (POST to /v1/chat/completions)
         is_likely_sse = (
@@ -110,7 +116,8 @@ async def proxy_request(request: Request, server_id: str, path: str):
                 is_likely_sse = True  # be safe, stream if we can't parse
 
         if is_likely_sse:
-            streaming = True
+            # Streaming: decrement happens in upstream_iterator's finally block
+            is_streaming = True
             return await _stream_upstream(
                 client, method, upstream_url, headers, body, server_id,
             )
@@ -145,6 +152,8 @@ async def proxy_request(request: Request, server_id: str, path: str):
             detail=f"Upstream server {server_id} timed out",
         )
     finally:
-        # Decrement for non-streaming paths; streaming path handles it internally
-        if not streaming:
+        # Decrement for non-streaming requests and errors.
+        # Streaming requests decrement inside _stream_upstream's iterator
+        # finally block when the stream fully drains or client disconnects.
+        if not is_streaming:
             server_cache.decrement_use(server_id)

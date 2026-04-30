@@ -177,6 +177,10 @@ class LlmmlLogger:
             stream=sys.stdout,
         )
 
+        # Suppress verbose third-party library logging
+        for _lib in ("openai", "httpx", "httpcore", "anyio", "starlette", "uvicorn.error"):
+            logging.getLogger(_lib).setLevel(logging.WARNING)
+
         self.logger: structlog.typing.FilteringBoundLogger = structlog.get_logger(
             service_name
         )

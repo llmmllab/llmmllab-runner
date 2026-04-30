@@ -34,7 +34,7 @@ def get_model_loader():
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
+async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     global server_cache, _evict_task
     logger.info("Runner starting up")
     server_cache = ServerCache()
@@ -47,6 +47,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
             evicted = server_cache.evict_idle()
             if evicted:
                 logger.info(f"Evicted {len(evicted)} idle servers")
+            hardware_manager.check_gpu_thermals()
 
     _evict_task = asyncio.create_task(evict_idle_servers())
 

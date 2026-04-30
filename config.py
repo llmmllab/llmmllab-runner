@@ -21,3 +21,6 @@ RUNNER_PORT = int(os.environ.get("RUNNER_PORT", "8000"))
 RUNNER_HOST = os.environ.get("RUNNER_HOST", "0.0.0.0")
 SERVER_PORT_RANGE_START = int(os.environ.get("SERVER_PORT_RANGE_START", "8001"))
 SERVER_PORT_RANGE_END = int(os.environ.get("SERVER_PORT_RANGE_END", "8900"))
+
+# GPU power cap: percentage of default TDP (0 to disable, 100 = no cap)
+GPU_POWER_CAP_PCT = float(os.environ.get("GPU_POWER_CAP_PCT", "85"))
