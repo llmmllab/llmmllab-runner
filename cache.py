@@ -117,7 +117,9 @@ class ServerCache:
         with self._lock:
             return self._servers.get(server_id)
 
-    def acquire_by_model(self, model_id: str) -> Optional[ServerEntry]:
+    def acquire_by_model(
+        self, model_id: str, log_miss: bool = True
+    ) -> Optional[ServerEntry]:
         """Find an existing healthy server for the given model.
 
         Returns the server entry if found and healthy, None otherwise.
@@ -134,7 +136,7 @@ class ServerCache:
                     continue
                 if entry.starting:
                     # Server is still starting — treat as "exists" so we don't
-                # create a duplicate. Return None to signal "try again later".
+                    # create a duplicate. Return None to signal "try again later".
                     continue
                 if entry.manager is not None and hasattr(entry.manager, "is_running"):
                     if not entry.manager.is_running():
@@ -149,20 +151,20 @@ class ServerCache:
             if eligible is not None:
                 eligible.idle_since = None
 
-        logger.info(
-            f"Acquired existing server {eligible.server_id} "
-            f"for model {model_id}"
-            if eligible
-            else f"No existing server for model {model_id}"
-        )
+        if eligible:
+            logger.info(
+                f"Acquired existing server {eligible.server_id} "
+                f"for model {model_id}"
+            )
+        elif log_miss:
+            logger.debug(f"No ready server for model {model_id}")
         return eligible
 
     def has_starting_server(self, model_id: str) -> bool:
         """Check if there's a server starting for this model."""
         with self._lock:
             return any(
-                e.model_id == model_id and e.starting
-                for e in self._servers.values()
+                e.model_id == model_id and e.starting for e in self._servers.values()
             )
 
     def increment_use(self, server_id: str) -> bool:
@@ -236,9 +238,7 @@ class ServerCache:
                         f"Error stopping evicted server {entry.server_id}: {e}"
                     )
             else:
-                logger.info(
-                    f"Hard-evicted idle server {entry.server_id} (no manager)"
-                )
+                logger.info(f"Hard-evicted idle server {entry.server_id} (no manager)")
         return [e.server_id for e in evicted]
 
     def remove(self, server_id: str) -> Optional[ServerEntry]:

@@ -52,29 +52,26 @@ kubectl apply -f "$K8S_DIR/service.yaml" -n "$NAMESPACE"
 case "$DEPLOY_MODE" in
   small)
     echo "Applying small runner deployment (tag: ${DOCKER_TAG})..."
-    kubectl set image deployment/llmmllab-runner-small \
-      llmmllab-runner="$IMAGE" -n "$NAMESPACE" --record=true \
-      || kubectl apply -f "$K8S_DIR/deployment.yaml" -n "$NAMESPACE" \
-        --selector='size=small'
+    kubectl apply -f "$K8S_DIR/deployment.yaml" -n "$NAMESPACE"
+    echo "Restarting small runner pods to pull fresh image..."
+    kubectl rollout restart deployment/llmmllab-runner-small -n "$NAMESPACE"
+    kubectl rollout status deployment/llmmllab-runner-small -n "$NAMESPACE" --timeout=300s
     ;;
   main)
     echo "Applying main runner deployment (tag: ${DOCKER_TAG})..."
-    kubectl set image deployment/llmmllab-runner \
-      llmmllab-runner="$IMAGE" -n "$NAMESPACE" --record=true \
-      || kubectl apply -f "$K8S_DIR/deployment.yaml" -n "$NAMESPACE" \
-        --selector='size!=small'
+    kubectl apply -f "$K8S_DIR/deployment.yaml" -n "$NAMESPACE"
+    echo "Restarting runner pods to pull fresh image..."
+    kubectl rollout restart deployment/llmmllab-runner -n "$NAMESPACE"
+    kubectl rollout status deployment/llmmllab-runner -n "$NAMESPACE" --timeout=300s
     ;;
   all)
     echo "Applying runner deployments (tag: ${DOCKER_TAG})..."
-    kubectl set image deployment/llmmllab-runner \
-      llmmllab-runner="$IMAGE" -n "$NAMESPACE" --record=true \
-      || true
-    kubectl set image deployment/llmmllab-runner-small \
-      llmmllab-runner="$IMAGE" -n "$NAMESPACE" --record=true \
-      || true
-    # Fallback: if set image failed (deployments don't exist yet), apply fresh
-    kubectl get deployment -n "$NAMESPACE" -l app=llmmllab-runner >/dev/null 2>&1 \
-      || kubectl apply -f "$K8S_DIR/deployment.yaml" -n "$NAMESPACE"
+    kubectl apply -f "$K8S_DIR/deployment.yaml" -n "$NAMESPACE"
+    echo "Restarting all runner pods to pull fresh images..."
+    kubectl rollout restart deployment/llmmllab-runner -n "$NAMESPACE" || true
+    kubectl rollout restart deployment/llmmllab-runner-small -n "$NAMESPACE" || true
+    kubectl rollout status deployment/llmmllab-runner -n "$NAMESPACE" --timeout=300s || true
+    kubectl rollout status deployment/llmmllab-runner-small -n "$NAMESPACE" --timeout=300s || true
     ;;
 esac
 

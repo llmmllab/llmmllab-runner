@@ -91,9 +91,9 @@ async def create_server(request: CreateServerRequest):
         logger.info(
             f"Server already starting for model {model.id}, waiting for readiness..."
         )
-        for _ in range(240):  # up to 120 seconds (120 * 2 polls per second)
+        for i in range(240):  # up to 120 seconds (240 * 0.5s)
             await asyncio.sleep(0.5)
-            entry = server_cache.acquire_by_model(model.id)
+            entry = server_cache.acquire_by_model(model.id, log_miss=False)
             if entry is not None:
                 base_url = f"http://localhost:{RUNNER_PORT}/v1/server/{entry.server_id}"
                 return {
@@ -102,6 +102,11 @@ async def create_server(request: CreateServerRequest):
                     "model": model.id,
                     "port": entry.port,
                 }
+            # Log progress every 10 seconds
+            if i > 0 and i % 20 == 0:
+                logger.info(
+                    f"Still waiting for model {model.id} to be ready ({i * 0.5:.0f}s elapsed)"
+                )
         raise HTTPException(
             status_code=500,
             detail=f"Server for model {model.id} failed to become ready",
@@ -224,6 +229,8 @@ def evict_server(server_id: str):
             logger.warning(f"Error stopping server {server_id}: {e}")
 
     server_cache.remove(server_id)
-    logger.info(f"Force-evicted server {server_id} (model {entry.model_id}, port {entry.port})")
+    logger.info(
+        f"Force-evicted server {server_id} (model {entry.model_id}, port {entry.port})"
+    )
 
     return {"status": "evicted", "server_id": server_id}
