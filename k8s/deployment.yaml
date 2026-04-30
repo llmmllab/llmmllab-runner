@@ -53,15 +53,15 @@ spec:
             - name: PYTHONUNBUFFERED
               value: "1"
             - name: LOG_LEVEL
-              value: "INFO"
+              value: "DEBUG"
             - name: LLAMA_SERVER_EXECUTABLE
               value: "/llama.cpp/build/bin/llama-server"
             - name: MODELS_FILE_PATH
               value: "/app/.models.yaml"
             - name: CACHE_TIMEOUT_MIN
-              value: "30"
+              value: "15"
             - name: EVICTION_TIMEOUT_MIN
-              value: "60"
+              value: "30"
             - name: RUNNER_PORT
               value: "8000"
             - name: RUNNER_HOST
