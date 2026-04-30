@@ -34,15 +34,23 @@ async def _stream_upstream(client, method, url, headers, body, server_id):
     llama.cpp, causing it to stop generating tokens for the abandoned slot.
     """
 
-    response = await client.send(
-        client.build_request(
-            method=method,
-            url=url,
-            headers=headers,
-            content=body if body else None,
-        ),
-        stream=True,
-    )
+    try:
+        response = await client.send(
+            client.build_request(
+                method=method,
+                url=url,
+                headers=headers,
+                content=body if body else None,
+            ),
+            stream=True,
+        )
+    except httpx.RemoteProtocolError as exc:
+        # Upstream crashed before sending any response headers.
+        logger.error("Upstream server %s disconnected before response: %s", server_id, exc)
+        await client.aclose()
+        from app import server_cache
+        server_cache.decrement_use(server_id)
+        raise
     response_headers = dict(response.headers)
     status_code = response.status_code
     clean_headers = {k: v for k, v in response_headers.items()
@@ -90,44 +98,50 @@ async def proxy_request(request: Request, server_id: str, path: str):
     # request queueing that causes cascading timeouts with --parallel 1.
     # Include a Retry-After header so callers can back off instead of
     # hammering the endpoint in a tight retry loop.
+    # Only reject if the server is healthy (responding to /health) AND
+    # all slots report as busy — a freshly restarted server may show stale
+    # slot state, so we skip the check if /health fails.
     remaining = path
     if "chat/completions" in remaining:
         try:
             async with httpx.AsyncClient(timeout=httpx.Timeout(2.0)) as check_client:
-                slots_resp = await check_client.get(f"{target_host}/slots")
-                if slots_resp.status_code == 200:
-                    slots = slots_resp.json()
-                    all_busy = all(s.get("is_processing", False) for s in slots)
-                    if all_busy:
-                        # Estimate remaining time from the busiest slot.
-                        # llama.cpp /slots returns:
-                        #   n_out_remaining — tokens left to generate
-                        #   t_token_ms      — average ms per token
-                        #   n_out_generated — tokens already generated
-                        # Fall back to 30 s if we can't estimate.
-                        retry_after = 30
-                        for s in slots:
-                            if not s.get("is_processing"):
-                                continue
-                            remaining_tokens = s.get("n_out_remaining")
-                            t_token_ms = s.get("t_token_ms")
-                            if remaining_tokens is not None and t_token_ms is not None:
-                                estimated_ms = remaining_tokens * t_token_ms
-                                # Add 20% safety margin, round up to seconds
-                                slot_retry = int(estimated_ms * 1.2 / 1000) + 1
-                                retry_after = max(retry_after, slot_retry)
-                        logger.warning(
-                            f"All slots busy, rejecting request (retry_after={retry_after}s)"
-                        )
-                        raise HTTPException(
-                            status_code=503,
-                            detail="All inference slots are busy",
-                            headers={"Retry-After": str(retry_after)},
-                        )
+                # Verify the server is actually responsive first
+                health_resp = await check_client.get(f"{target_host}/health")
+                if health_resp.status_code == 200:
+                    slots_resp = await check_client.get(f"{target_host}/slots")
+                    if slots_resp.status_code == 200:
+                        slots = slots_resp.json()
+                        all_busy = all(s.get("is_processing", False) for s in slots)
+                        if all_busy:
+                            # Estimate remaining time from the busiest slot.
+                            # llama.cpp /slots returns:
+                            #   n_out_remaining — tokens left to generate
+                            #   t_token_ms      — average ms per token
+                            #   n_out_generated — tokens already generated
+                            # Fall back to 30 s if we can't estimate.
+                            retry_after = 30
+                            for s in slots:
+                                if not s.get("is_processing"):
+                                    continue
+                                remaining_tokens = s.get("n_out_remaining")
+                                t_token_ms = s.get("t_token_ms")
+                                if remaining_tokens is not None and t_token_ms is not None:
+                                    estimated_ms = remaining_tokens * t_token_ms
+                                    # Add 20% safety margin, round up to seconds
+                                    slot_retry = int(estimated_ms * 1.2 / 1000) + 1
+                                    retry_after = max(retry_after, slot_retry)
+                            logger.warning(
+                                f"All slots busy, rejecting request (retry_after={retry_after}s)"
+                            )
+                            raise HTTPException(
+                                status_code=503,
+                                detail="All inference slots are busy",
+                                headers={"Retry-After": str(retry_after)},
+                            )
         except HTTPException:
             raise
         except Exception:
-            pass  # If /slots check fails, proceed normally
+            pass  # If /health or /slots check fails, proceed normally
 
     # Mark server as in-use during request
     server_cache.increment_use(server_id)
@@ -194,6 +208,17 @@ async def proxy_request(request: Request, server_id: str, path: str):
                              if k.lower() not in ("transfer-encoding", "content-length")},
                 )
 
+    except httpx.RemoteProtocolError as exc:
+        # Upstream llama.cpp crashed or disconnected mid-request
+        # (e.g., OOM, segfault, or killed by the kernel).
+        # Return 503 so the caller can retry on a different server.
+        logger.error(
+            "Upstream server %s disconnected: %s", server_id, exc
+        )
+        raise HTTPException(
+            status_code=503,
+            detail=f"Upstream server {server_id} disconnected unexpectedly: {exc}",
+        )
     except httpx.ConnectError:
         raise HTTPException(
             status_code=502,
