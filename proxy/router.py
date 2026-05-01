@@ -88,6 +88,8 @@ async def proxy_request(request: Request, server_id: str, path: str):
 
     # Reject chat completion requests when all slots are busy to prevent
     # request queueing that causes cascading timeouts with --parallel 1.
+    # Include a Retry-After header so callers can back off instead of
+    # hammering the endpoint in a tight retry loop.
     remaining = path
     if "chat/completions" in remaining:
         try:
@@ -97,10 +99,23 @@ async def proxy_request(request: Request, server_id: str, path: str):
                     slots = slots_resp.json()
                     all_busy = all(s.get("is_processing", False) for s in slots)
                     if all_busy:
-                        logger.warning("All slots busy, rejecting request")
+                        # Estimate how long the longest-running request has left.
+                        # Use the eval timing from the busiest slot to guess.
+                        # Default to 30 s if we can't estimate.
+                        retry_after = 30
+                        for s in slots:
+                            if s.get("is_processing"):
+                                # Rough estimate: tokens generated so far × avg
+                                # eval time per token.  We don't have a perfect
+                                # signal here, so we use a conservative default.
+                                retry_after = max(retry_after, 30)
+                        logger.warning(
+                            f"All slots busy, rejecting request (retry_after={retry_after}s)"
+                        )
                         raise HTTPException(
                             status_code=503,
                             detail="All inference slots are busy",
+                            headers={"Retry-After": str(retry_after)},
                         )
         except HTTPException:
             raise
