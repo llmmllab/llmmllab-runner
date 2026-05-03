@@ -59,7 +59,7 @@ spec:
             - name: MODELS_FILE_PATH
               value: "/app/.models.yaml"
             - name: CACHE_TIMEOUT_MIN
-              value: "15"
+              value: "1"
             - name: EVICTION_TIMEOUT_MIN
               value: "30"
             - name: RUNNER_PORT
@@ -86,8 +86,12 @@ spec:
               value: "2"
             - name: GGML_LOG_LEVEL
               value: "2"
-            - name: FORCE_COLOR
-              value: "1"
+            - name: LOG_FORMAT
+              value: "json"
+            - name: RUNNER_NAME
+              value: "llmmllab-runner"
+            - name: TEMPO_ENDPOINT
+              value: "http://tempo.llmmllab.svc.cluster.local:4317"
   strategy:
     type: Recreate
 ---
@@ -97,17 +101,17 @@ metadata:
   name: llmmllab-runner-small
   namespace: llmmllab
   labels:
-    app: llmmllab-runner
+    app: llmmllab-runner-small
     size: small
 spec:
   selector:
     matchLabels:
-      app: llmmllab-runner
+      app: llmmllab-runner-small
       size: small
   template:
     metadata:
       labels:
-        app: llmmllab-runner
+        app: llmmllab-runner-small
         size: small
     spec:
       runtimeClassName: nvidia
@@ -149,15 +153,15 @@ spec:
             - name: PYTHONUNBUFFERED
               value: "1"
             - name: LOG_LEVEL
-              value: "INFO"
+              value: "DEBUG"
             - name: LLAMA_SERVER_EXECUTABLE
               value: "/llama.cpp/build/bin/llama-server"
             - name: MODELS_FILE_PATH
-              value: "/app/.models.yaml"
+              value: "/app/.models.small.yaml"
             - name: CACHE_TIMEOUT_MIN
-              value: "30"
+              value: "1"
             - name: EVICTION_TIMEOUT_MIN
-              value: "60"
+              value: "30"
             - name: RUNNER_PORT
               value: "8000"
             - name: RUNNER_HOST
@@ -182,7 +186,11 @@ spec:
               value: "2"
             - name: GGML_LOG_LEVEL
               value: "2"
-            - name: FORCE_COLOR
-              value: "1"
+            - name: LOG_FORMAT
+              value: "json"
+            - name: RUNNER_NAME
+              value: "llmmllab-runner-small"
+            - name: TEMPO_ENDPOINT
+              value: "http://tempo.llmmllab.svc.cluster.local:4317"
   strategy:
     type: Recreate

@@ -7,11 +7,11 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from config import RUNNER_PORT
-from models import UserConfig
 from server_manager import LlamaCppServerManager
 from utils.hardware_manager import hardware_manager
 from utils.logging import llmmllogger
 from utils.model_loader import ModelLoader
+from middleware.runner_metrics import record_server_start
 
 logger = llmmllogger.bind(component="servers_router")
 router = APIRouter()
@@ -21,7 +21,6 @@ model_loader = ModelLoader()
 class CreateServerRequest(BaseModel):
     model_id: str
     priority: int = 10
-    config_override: Optional[Dict[str, Any]] = None
 
 
 def _estimate_model_size(model) -> float:
@@ -115,16 +114,8 @@ async def create_server(request: CreateServerRequest):
     # Evict idle servers if needed for VRAM
     _evict_for_vram(model)
 
-    user_config = None
-    if request.config_override:
-        try:
-            user_config = UserConfig(**request.config_override)
-        except Exception:
-            user_config = None
-
     manager = LlamaCppServerManager(
         model=model,
-        user_config=user_config,
     )
 
     # Register as "starting" BEFORE starting the process to prevent duplicates
@@ -142,6 +133,7 @@ async def create_server(request: CreateServerRequest):
 
     # Mark as ready
     server_cache.mark_ready(server_id)
+    record_server_start(model.id)
 
     base_url = f"http://localhost:{RUNNER_PORT}/v1/server/{server_id}"
 

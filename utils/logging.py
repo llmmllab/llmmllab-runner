@@ -121,6 +121,9 @@ class LlmmlLogger:
         }
         logging_level = log_level_map.get(log_level, "info")
 
+        # Log format: "json" for Loki aggregation, "console" for human readability
+        log_format = os.environ.get("LOG_FORMAT", "console").lower()
+
         # Check if we should force colors (useful for Kubernetes logs)
         force_colors = os.environ.get("FORCE_COLOR", "0") == "1"
 
@@ -138,12 +141,13 @@ class LlmmlLogger:
             structlog.stdlib.PositionalArgumentsFormatter(),
             structlog.processors.TimeStamper(fmt="iso"),
             structlog.processors.StackInfoRenderer(),
-            # structlog.processors.format_exc_info,
             structlog.processors.UnicodeDecoder(),
         ]
 
-        # Add colorized console renderer if colors are enabled
-        if use_colors:
+        # Select renderer based on LOG_FORMAT
+        if log_format == "json":
+            processors.append(structlog.processors.JSONRenderer())
+        elif use_colors:
             processors.append(
                 structlog.dev.ConsoleRenderer(
                     colors=True,
@@ -189,6 +193,7 @@ class LlmmlLogger:
             "Logger initialized",
             service=service_name,
             log_lvl=log_level,
+            log_format=log_format,
             colors=use_colors,
         )
 

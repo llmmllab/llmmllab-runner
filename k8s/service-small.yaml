@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: llmmllab-runner-small
+  namespace: llmmllab
+  labels:
+    app: llmmllab-runner-small
+spec:
+  type: ClusterIP
+  selector:
+    app: llmmllab-runner-small
+  ports:
+    - name: http
+      port: 8000
+      targetPort: 8000
+      protocol: TCP
+  publishNotReadyAddresses: true

@@ -9,4 +9,5 @@ build/
 .pytest_cache/
 *.egg
 .models.yaml
-.models.local.yaml
+.models.*.yaml
+!.models.example.yaml

@@ -9,7 +9,7 @@ import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from models import Model, ModelParameters, UserConfig
+from models import Model, ModelParameters
 from config import LLAMA_SERVER_EXECUTABLE, LOG_LEVEL
 from utils.logging import llmmllogger
 
@@ -21,19 +21,17 @@ class LlamaCppArgumentBuilder:
 
     Usage::
 
-        builder = LlamaCppArgumentBuilder(model, user_config, port)
+        builder = LlamaCppArgumentBuilder(model, port)
         args = builder.build_args()   # ["/llama.cpp/.../llama-server", "--model", "/path/to.gguf", ...]
     """
 
     def __init__(
         self,
         model: Model,
-        user_config: Optional[UserConfig] = None,
         port: Optional[int] = None,
         is_embedding: bool = False,
     ):
         self.model = model
-        self.user_config = user_config
         self.port = port
         self.is_embedding = is_embedding
 

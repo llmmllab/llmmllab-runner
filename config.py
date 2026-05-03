@@ -4,6 +4,8 @@ from dotenv import load_dotenv
 load_dotenv()
 
 LOG_LEVEL = os.environ.get("LOG_LEVEL", "WARNING")
+LOG_FORMAT = os.environ.get("LOG_FORMAT", "console")
+RUNNER_NAME = os.environ.get("RUNNER_NAME", "llmmllab-runner")
 LLAMA_SERVER_EXECUTABLE = os.environ.get(
     "LLAMA_SERVER_EXECUTABLE", "/llama.cpp/build/bin/llama-server"
 )

@@ -10,7 +10,11 @@ from config import RUNNER_HOST, RUNNER_PORT
 from cache import ServerCache
 from routers import models as models_router
 from routers import servers as servers_router
+from routers import metrics as metrics_router
 from proxy import router as proxy_router
+from middleware import RequestIdMiddleware, PrometheusMiddleware
+from middleware.runner_metrics import update_server_metrics, update_gpu_metrics
+from middleware.tracing import setup_tracing, shutdown_tracing
 from utils.hardware_manager import hardware_manager
 from utils.logging import llmmllogger
 
@@ -48,6 +52,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             if evicted:
                 logger.info(f"Evicted {len(evicted)} idle servers")
             hardware_manager.check_gpu_thermals()
+            # Update Prometheus metrics
+            try:
+                update_server_metrics(server_cache)
+                update_gpu_metrics()
+            except Exception as e:
+                logger.debug(f"Metrics update failed: {e}")
 
     _evict_task = asyncio.create_task(evict_idle_servers())
 
@@ -63,6 +73,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             pass
     if server_cache:
         server_cache.stop_all()
+    # Shutdown tracing
+    shutdown_tracing()
     logger.info("Runner shutdown complete")
 
 
@@ -77,6 +89,12 @@ app = FastAPI(
 app.include_router(models_router.router)
 app.include_router(servers_router.router)
 app.include_router(proxy_router.router)
+app.include_router(metrics_router.router)
+app.add_middleware(RequestIdMiddleware)
+app.add_middleware(PrometheusMiddleware)
+
+# Initialize distributed tracing
+setup_tracing("llmmllab-runner", app)
 
 
 @app.get("/health")

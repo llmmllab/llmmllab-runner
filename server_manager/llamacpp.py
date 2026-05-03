@@ -4,7 +4,7 @@ LlamaCppServerManager - Specialized server manager for llama.cpp servers.
 
 from typing import List, Optional
 
-from models import Model, UserConfig
+from models import Model
 from server_manager.base import BaseServerManager
 from server_manager.llamacpp_argument_builder import LlamaCppArgumentBuilder
 
@@ -15,13 +15,11 @@ class LlamaCppServerManager(BaseServerManager):
     def __init__(
         self,
         model: Model,
-        user_config: Optional[UserConfig] = None,
         port: Optional[int] = None,
         is_embedding: bool = False,
     ):
         super().__init__(
             model=model,
-            user_config=user_config,
             port=port,
             startup_timeout=120,
         )
@@ -38,7 +36,6 @@ class LlamaCppServerManager(BaseServerManager):
         """Build command line arguments for llama.cpp server."""
         builder = LlamaCppArgumentBuilder(
             model=self.model,
-            user_config=self.user_config,
             port=self.port,
             is_embedding=self.is_embedding,
         )

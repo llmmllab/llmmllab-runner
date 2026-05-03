@@ -50,7 +50,7 @@ docker-build-push: docker-build docker-push ## Build and push Docker image
 
 ## Kubernetes
 # RUNNER_DEPLOY: all (default), main, small
-RUNNER_DEPLOY ?= main
+RUNNER_DEPLOY ?= all
 
 deploy: docker-build-push k8s-deploy ## Build, push, and deploy to k8s
 	@echo "Deployment complete!"
