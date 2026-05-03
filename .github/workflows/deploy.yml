@@ -1,0 +1,49 @@
+name: Deploy Runner
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    name: Build & Deploy Runner
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: 22
+          script: |
+            set -euo pipefail
+            
+            # Tag with commit SHA and latest
+            REGISTRY=192.168.0.71:31500
+            IMAGE=llmmllab-runner
+            SHA=${{ github.sha }}
+            SHORT_SHA=$(echo $SHA | cut -c1-7)
+            
+            echo "Building llmmllab-runner (SHA: $SHORT_SHA)..."
+            
+            # Build Docker image (includes CUDA compilation of llama.cpp)
+            docker build -t ${REGISTRY}/${IMAGE}:${SHA} .
+            docker tag ${REGISTRY}/${IMAGE}:${SHA} ${REGISTRY}/${IMAGE}:latest
+            
+            # Push to registry
+            docker push ${REGISTRY}/${IMAGE}:${SHA}
+            docker push ${REGISTRY}/${IMAGE}:latest
+            
+            # Update both runner deployments with SHA tag
+            kubectl set image -n llmmllab deployment/llmmllab-runner \
+              llmmllab-runner=${REGISTRY}/${IMAGE}:${SHA} \
+              --context=lsnet
+            
+            kubectl set image -n llmmllab deployment/llmmllab-runner-small \
+              llmmllab-runner=${REGISTRY}/${IMAGE}:${SHA} \
+              --context=lsnet
+            
+            echo "Deployed llmmllab-runner:${SHA} (main + small)"
