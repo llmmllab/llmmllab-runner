@@ -88,6 +88,8 @@ async def proxy_request(request: Request, server_id: str, path: str):
 
     # Reject chat completion requests when all slots are busy to prevent
     # request queueing that causes cascading timeouts with --parallel 1.
+    # Include a Retry-After header so callers can back off instead of
+    # hammering the endpoint in a tight retry loop.
     remaining = path
     if "chat/completions" in remaining:
         try:
@@ -97,10 +99,30 @@ async def proxy_request(request: Request, server_id: str, path: str):
                     slots = slots_resp.json()
                     all_busy = all(s.get("is_processing", False) for s in slots)
                     if all_busy:
-                        logger.warning("All slots busy, rejecting request")
+                        # Estimate remaining time from the busiest slot.
+                        # llama.cpp /slots returns:
+                        #   n_out_remaining — tokens left to generate
+                        #   t_token_ms      — average ms per token
+                        #   n_out_generated — tokens already generated
+                        # Fall back to 30 s if we can't estimate.
+                        retry_after = 30
+                        for s in slots:
+                            if not s.get("is_processing"):
+                                continue
+                            remaining_tokens = s.get("n_out_remaining")
+                            t_token_ms = s.get("t_token_ms")
+                            if remaining_tokens is not None and t_token_ms is not None:
+                                estimated_ms = remaining_tokens * t_token_ms
+                                # Add 20% safety margin, round up to seconds
+                                slot_retry = int(estimated_ms * 1.2 / 1000) + 1
+                                retry_after = max(retry_after, slot_retry)
+                        logger.warning(
+                            f"All slots busy, rejecting request (retry_after={retry_after}s)"
+                        )
                         raise HTTPException(
                             status_code=503,
                             detail="All inference slots are busy",
+                            headers={"Retry-After": str(retry_after)},
                         )
         except HTTPException:
             raise
