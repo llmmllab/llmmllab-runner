@@ -1,32 +1,67 @@
-name: Deploy to lsnode-3
+name: Deploy Runner
 
 on:
   push:
     branches: [main]
-  workflow_dispatch:
-
-env:
-  DEPLOY_HOST: lsnode-3
-  DEPLOY_USER: lsm
-
-permissions:
-  contents: read
 
 jobs:
   deploy:
+    name: Build & Deploy Runner
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+
+      - name: Setup SSH
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
 
       - name: Deploy via SSH
-        uses: appleboy/ssh-action@v1.0.3
-        with:
-          host: ${{ env.DEPLOY_HOST }}
-          username: ${{ env.DEPLOY_USER }}
-          key: ${{ secrets.DEPLOY_SSH_PRIVATE_KEY }}
-          script: |
-            echo "Deploying llmmllab-runner to $DEPLOY_HOST..."
-            cd ~/llmmllab-runner
-            git pull origin main
-            # Add your deploy commands here (e.g., docker compose up -d, systemctl restart, etc.)
+        run: |
+          set -euo pipefail
+
+          SSH_HOST="${{ secrets.SSH_HOST }}"
+          SSH_USER="${{ secrets.SSH_USER }}"
+          REGISTRY=192.168.0.71:31500
+          IMAGE=llmmllab-runner
+          SHA=${{ github.sha }}
+          SHORT_SHA=$(echo $SHA | cut -c1-7)
+
+          echo "Building llmmllab-runner (SHA: $SHORT_SHA)..."
+
+          # Verify SSH connectivity
+          ssh -o StrictHostKeyChecking=no $SSH_USER@$SSH_HOST "echo 'SSH connection OK'"
+
+          # Sync repo to remote
+          ssh -o StrictHostKeyChecking=no $SSH_USER@$SSH_HOST "rm -rf /tmp/llmmllab-runner-build && mkdir -p /tmp/llmmllab-runner-build"
+          tar cf - . | ssh -o StrictHostKeyChecking=no $SSH_USER@$SSH_HOST "cd /tmp/llmmllab-runner-build && tar xf -"
+
+          # Run build on remote
+          ssh -o StrictHostKeyChecking=no $SSH_USER@$SSH_HOST bash -s <<REMOTE
+            set -euo pipefail
+            cd /tmp/llmmllab-runner-build
+
+            REGISTRY=$REGISTRY
+            IMAGE=$IMAGE
+            SHA=$SHA
+            SHORT_SHA=$SHORT_SHA
+
+            echo "Building Docker image (CUDA)..."
+            docker build -t \${REGISTRY}/\${IMAGE}:\${SHA} .
+            docker tag \${REGISTRY}/\${IMAGE}:\${SHA} \${REGISTRY}/\${IMAGE}:latest
+
+            echo "Pushing images..."
+            docker push \${REGISTRY}/\${IMAGE}:\${SHA}
+            docker push \${REGISTRY}/\${IMAGE}:latest
+
+            echo "Updating k8s deployments..."
+            kubectl set image -n llmmllab deployment/llmmllab-runner \
+              llmmllab-runner=\${REGISTRY}/\${IMAGE}:\${SHA} \
+              --context=lsnet
+
+            kubectl set image -n llmmllab deployment/llmmllab-runner-small \
+              llmmllab-runner=\${REGISTRY}/\${IMAGE}:\${SHA} \
+              --context=lsnet
+
+            echo "Deployed llmmllab-runner:\${SHA} (main + small)"
+          REMOTE
