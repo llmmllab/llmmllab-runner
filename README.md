@@ -403,3 +403,5 @@ Returns per-GPU memory usage, active server list with ports and use counts, and 
 ## License
 
 Private — see project maintainer for usage terms.
+
+<!-- Test deploy workflow 20260504002035 -->
