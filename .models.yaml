@@ -180,51 +180,6 @@
   lora_weights: []
   provider: llama_cpp
 
-- id: Qwen3_5_4B
-  name: "Qwen3.5-4B"
-  model: "Qwen3.5-4B"
-  task: TextToText
-  modified_at: "2026-03-23T02:35:26.645732+00:00"
-  digest: 161be121617c45ea247eae0fd4477d26f287a368b52702e3fc99c9bc52f23061
-  size: 3024934048
-  details:
-    format: gguf
-    gguf_file: /models/qwen3.5/4b/q5_k_s.gguf
-    family: qwen
-    families:
-      - qwen
-    parameter_size: 4.2B
-    quantization_level: Q5_K_S
-    precision: int4
-    dtype: int4
-    specialization: Text
-    size: 3024934048
-    original_ctx: 2048
-    clip_model_path: "/models/qwen3.5/4b/mmproj-bf16.gguf"
-  parameters:
-    num_ctx: 262144
-    repeat_last_n: -1
-    repeat_penalty: 0
-    temperature: 0.7
-    seed: -1
-    num_predict: -1
-    top_k: 20
-    top_p: 0.95
-    min_p: 0.05
-    max_tokens: 65536
-    n_parts: -1
-    batch_size: 2048
-    micro_batch_size: 1024
-    n_gpu_layers: -1
-    think: False
-    kv_on_cpu: True
-    tensor_split: "1,0,0"
-    main_gpu: 0
-    # n_cpu_moe: 10
-  pipeline: llama
-  lora_weights: []
-  provider: llama_cpp
-
 - id: nomic_xlm
   name: "nomic-embed-text-v2-moe"
   model: "nomic-xlm"
@@ -382,7 +337,7 @@
     original_ctx: 2048
     clip_model_path: /models/qwen3.6/27b/mmproj.gguf
   parameters:
-    num_ctx: 220000
+    num_ctx: 200000
     repeat_last_n: -1
     repeat_penalty: 0.7
     temperature: 0.7
@@ -398,9 +353,10 @@
     n_gpu_layers: -1
     think: False
     kv_on_cpu: False
-    # tensor_split: "0,1,1"
+    tensor_split: "0,1,1"
     main_gpu: 2
     # n_cpu_moe: 10
+    parallel: 1
   pipeline: llama
   lora_weights: []
   provider: llama_cpp
