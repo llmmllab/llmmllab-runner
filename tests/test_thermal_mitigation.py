@@ -24,7 +24,7 @@ class TestThermalMitigation:
         mock_run.return_value = MagicMock(
             returncode=0, stdout="88.0\n", stderr=""
         )
-        mgr = self._make_manager(MagicMock())
+        mgr = self._make_manager()
         temps = mgr.check_gpu_thermals()
 
         assert temps[0] == 88.0
@@ -41,7 +41,7 @@ class TestThermalMitigation:
         mock_run.return_value = MagicMock(
             returncode=0, stdout="92.0\n", stderr=""
         )
-        mgr = self._make_manager(MagicMock())
+        mgr = self._make_manager()
         temps = mgr.check_gpu_thermals()
 
         assert temps[0] == 92.0
@@ -54,7 +54,7 @@ class TestThermalMitigation:
         mock_run.return_value = MagicMock(
             returncode=0, stdout="78.0\n", stderr=""
         )
-        mgr = self._make_manager(MagicMock())
+        mgr = self._make_manager()
         temps = mgr.check_gpu_thermals()
 
         assert temps[0] == 78.0
@@ -67,7 +67,7 @@ class TestThermalMitigation:
         mock_run.return_value = MagicMock(
             returncode=0, stdout="55.0\n", stderr=""
         )
-        mgr = self._make_manager(MagicMock())
+        mgr = self._make_manager()
         temps = mgr.check_gpu_thermals()
 
         assert temps[0] == 55.0
@@ -76,7 +76,7 @@ class TestThermalMitigation:
     @patch("utils.hardware_manager.subprocess.run")
     def test_cool_down_restores_power_cap(self, mock_run):
         """After a critical event, cooling below warning restores power cap."""
-        mgr = self._make_manager(MagicMock())
+        mgr = self._make_manager()
         mgr._gpu_power_cap_pct = 85
 
         # First call: critical temp
