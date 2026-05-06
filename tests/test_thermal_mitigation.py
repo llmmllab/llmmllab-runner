@@ -78,14 +78,15 @@ class TestThermalMitigation:
         """After a critical event, cooling below warning restores power cap."""
         mgr = self._make_manager()
         mgr._gpu_power_cap_pct = 85
+        mgr._thermal_throttler._default_power_cap_pct = 85
 
         # First call: critical temp
         mock_run.return_value = MagicMock(
             returncode=0, stdout="88.0\n", stderr=""
         )
         mgr.check_gpu_thermals()
-        # _last_critical_ts should be populated
-        assert 0 in mgr._last_critical_ts
+        # _last_critical_ts lives on the throttler now
+        assert 0 in mgr._thermal_throttler._last_critical_ts
 
         # Second call: cooled down
         mock_run.return_value = MagicMock(
@@ -93,4 +94,4 @@ class TestThermalMitigation:
         )
         mgr.check_gpu_thermals()
         # Power cap should be restored, tracking cleared
-        assert 0 not in mgr._last_critical_ts
+        assert 0 not in mgr._thermal_throttler._last_critical_ts
