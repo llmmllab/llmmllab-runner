@@ -5,6 +5,7 @@ This provides a foundation for managing server processes regardless of the
 underlying implementation (llama.cpp, vLLM, etc.).
 """
 
+import json
 import socket
 import subprocess
 import threading
@@ -144,6 +145,8 @@ class BaseServerManager(ABC):
                     self._logger.info(
                         f"Server started successfully on port {self.port}"
                     )
+                    # Validate actual context size after boot
+                    self._validate_context_size()
                     return True
                 else:
                     self._logger.error(
@@ -154,6 +157,41 @@ class BaseServerManager(ABC):
             except Exception as e:
                 self._logger.error(f"Failed to start server: {e}")
                 return False
+
+    def _validate_context_size(self) -> None:
+        """Check the actual context size after server boot and warn if reduced."""
+        try:
+            models_endpoint = self.get_api_endpoint("/v1/models")
+            resp = requests.get(models_endpoint, timeout=5)
+            if resp.status_code == 200:
+                models = resp.json()
+                if models:
+                    model_info = models[0]
+                    actual_ctx = (
+                        model_info.get("max_model_len")
+                        or model_info.get("max_context")
+                        or model_info.get("context_length")
+                    )
+                    if actual_ctx is not None:
+                        configured_ctx = (
+                            getattr(self.model.parameters, "num_ctx", None)
+                            or 90000
+                        )
+                        actual_ctx = int(actual_ctx)
+                        if actual_ctx < configured_ctx:
+                            self._logger.warning(
+                                f"Context size reduced by server: "
+                                f"configured={configured_ctx}, actual={actual_ctx} "
+                                f"({actual_ctx/configured_ctx*100:.0f}% of requested). "
+                                f"Conversations may fail when exceeding {actual_ctx} tokens. "
+                                f"Consider reducing num_ctx in models config or increasing GPU VRAM."
+                            )
+                        else:
+                            self._logger.debug(
+                                f"Context size OK: configured={configured_ctx}, actual={actual_ctx}"
+                            )
+        except Exception as e:
+            self._logger.debug(f"Could not validate context size: {e}")
 
     def _wait_for_server(self) -> bool:
         """Wait for server to become ready."""
