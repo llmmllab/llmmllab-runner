@@ -1,4 +1,5 @@
 import subprocess
+import time
 from typing import Dict, List
 
 import nvsmi
@@ -19,6 +20,10 @@ class HardwareManager:
         self._gpu_power_cap_pct = GPU_POWER_CAP_PCT
         self._thermal_warning_c = 78.0
         self._thermal_critical_c = 88.0
+        self._thermal_emergency_c = 92.0
+        self._critical_power_cap_pct = 50  # aggressive throttle when critical
+        self._emergency_power_cap_pct = 30  # extreme throttle when emergency
+        self._last_critical_ts: Dict[int, float] = {}  # track cooldown per GPU
         try:
             self._gpus = list(nvsmi.get_gpus())
             self._has_gpu = len(self._gpus) > 0
@@ -118,8 +123,51 @@ class HardwareManager:
             except Exception as e:
                 logger.debug(f"GPU {i}: power management setup failed: {e}")
 
+    def _set_power_cap(self, gpu_idx: int, pct: int) -> bool:
+        """Set an absolute power cap on a single GPU (percentage of default limit).
+
+        Returns True if the cap was successfully applied.
+        """
+        try:
+            result = subprocess.run(
+                [
+                    "nvidia-smi", "-i", str(gpu_idx),
+                    "--query-gpu=power.default_limit",
+                    "--format=csv,noheader,nounits",
+                ],
+                capture_output=True, text=True, timeout=10, check=False,
+            )
+            if result.returncode != 0 or not result.stdout.strip():
+                return False
+
+            default_watts = float(result.stdout.strip())
+            target_watts = int(default_watts * pct / 100)
+
+            set_result = subprocess.run(
+                ["nvidia-smi", "-i", str(gpu_idx), "-pl", str(target_watts)],
+                capture_output=True, text=True, timeout=10, check=False,
+            )
+            return set_result.returncode == 0
+        except Exception:
+            return False
+
+    def _restore_power_cap(self, gpu_idx: int) -> None:
+        """Restore the original power cap after thermal event cools down."""
+        if self._gpu_power_cap_pct <= 0 or self._gpu_power_cap_pct > 100:
+            return
+        ok = self._set_power_cap(gpu_idx, int(self._gpu_power_cap_pct))
+        if ok:
+            logger.info(
+                f"GPU {gpu_idx}: thermal event cleared, "
+                f"power cap restored to {self._gpu_power_cap_pct:.0f}%"
+            )
+
     def check_gpu_thermals(self) -> Dict[int, float]:
-        """Check GPU temperatures and log warnings for hot devices.
+        """Check GPU temperatures and apply thermal mitigation when needed.
+
+        When a GPU reaches critical temperature, the power cap is aggressively
+        reduced to prevent PCIe bus drop.  Once the GPU cools below the warning
+        threshold, the original power cap is restored.
 
         Returns dict mapping device index → temperature in Celsius.
         """
@@ -145,15 +193,29 @@ class HardwareManager:
                     temp = float(line.strip())
                     temps[idx] = temp
 
-                    if temp >= self._thermal_critical_c:
+                    if temp >= self._thermal_emergency_c:
+                        logger.critical(
+                            f"GPU {idx} EMERGENCY temperature: "
+                            f"{temp}°C — throttling to {self._emergency_power_cap_pct}% power cap!"
+                        )
+                        if self._set_power_cap(idx, self._emergency_power_cap_pct):
+                            self._last_critical_ts[idx] = time.time()
+                    elif temp >= self._thermal_critical_c:
                         logger.error(
                             f"GPU {idx} CRITICAL temperature: "
-                            f"{temp}°C — risk of PCIe bus drop!"
+                            f"{temp}°C — throttling to {self._critical_power_cap_pct}% power cap "
+                            f"to prevent PCIe bus drop!"
                         )
+                        if self._set_power_cap(idx, self._critical_power_cap_pct):
+                            self._last_critical_ts[idx] = time.time()
                     elif temp >= self._thermal_warning_c:
                         logger.warning(
                             f"GPU {idx} high temperature: {temp}°C"
                         )
+                    elif idx in self._last_critical_ts:
+                        # GPU has cooled below warning — restore power cap
+                        self._restore_power_cap(idx)
+                        del self._last_critical_ts[idx]
                 except ValueError:
                     continue
         except Exception as e:
