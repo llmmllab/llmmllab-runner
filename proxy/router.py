@@ -53,8 +53,11 @@ async def _stream_upstream(client, method, url, headers, body, server_id):
         raise
     response_headers = dict(response.headers)
     status_code = response.status_code
-    clean_headers = {k: v for k, v in response_headers.items()
-                     if k.lower() not in ("transfer-encoding", "content-length")}
+    clean_headers = {
+        k: v
+        for k, v in response_headers.items()
+        if k.lower() not in ("transfer-encoding", "content-length")
+    }
 
     async def upstream_iterator():
         try:
@@ -67,6 +70,7 @@ async def _stream_upstream(client, method, url, headers, body, server_id):
             await client.aclose()
             # Request fully consumed (or client disconnected) — mark server idle
             from app import server_cache
+
             server_cache.decrement_use(server_id)
 
     return StreamingResponse(
@@ -76,7 +80,10 @@ async def _stream_upstream(client, method, url, headers, body, server_id):
     )
 
 
-@router.api_route("/v1/server/{server_id}/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
+@router.api_route(
+    "/v1/server/{server_id}/{path:path}",
+    methods=["GET", "POST", "PUT", "DELETE", "PATCH"],
+)
 async def proxy_request(request: Request, server_id: str, path: str):
     """Proxy a request to the target llama.cpp server.
 
@@ -156,9 +163,16 @@ async def proxy_request(request: Request, server_id: str, path: str):
 
         # Build headers (exclude hop-by-hop)
         hop_by_hop = {
-            "host", "connection", "keep-alive", "transfer-encoding",
-            "upgrade", "proxy-authenticate", "proxy-authorization",
-            "te", "trailers", "proxy-connection",
+            "host",
+            "connection",
+            "keep-alive",
+            "transfer-encoding",
+            "upgrade",
+            "proxy-authenticate",
+            "proxy-authorization",
+            "te",
+            "trailers",
+            "proxy-connection",
         }
         headers = dict(request.headers)
         for h in hop_by_hop:
@@ -169,11 +183,7 @@ async def proxy_request(request: Request, server_id: str, path: str):
         client = httpx.AsyncClient(timeout=PROXY_TIMEOUT)
 
         # Check if this is likely an SSE request (POST to /v1/chat/completions)
-        is_likely_sse = (
-            method == "POST"
-            and "/chat/completions" in remaining
-            and body
-        )
+        is_likely_sse = method == "POST" and "/chat/completions" in remaining and body
 
         if is_likely_sse:
             try:
@@ -186,7 +196,12 @@ async def proxy_request(request: Request, server_id: str, path: str):
             # Streaming: decrement happens in upstream_iterator's finally block
             is_streaming = True
             return await _stream_upstream(
-                client, method, upstream_url, headers, body, server_id,
+                client,
+                method,
+                upstream_url,
+                headers,
+                body,
+                server_id,
             )
 
         # Non-streaming: buffer entire response
@@ -204,8 +219,11 @@ async def proxy_request(request: Request, server_id: str, path: str):
                 return Response(
                     content=content,
                     status_code=response.status_code,
-                    headers={k: v for k, v in dict(response.headers).items()
-                             if k.lower() not in ("transfer-encoding", "content-length")},
+                    headers={
+                        k: v
+                        for k, v in dict(response.headers).items()
+                        if k.lower() not in ("transfer-encoding", "content-length")
+                    },
                 )
 
     except httpx.RemoteProtocolError as exc:
