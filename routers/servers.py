@@ -125,11 +125,35 @@ async def create_server(request: CreateServerRequest):
         manager=manager,
     )
 
-    # Run blocking start() in a thread pool to avoid blocking the event loop
-    started = await asyncio.get_event_loop().run_in_executor(None, manager.start)
+    # Run blocking start() in a thread pool to avoid blocking the event loop.
+    # Retry on OOM (exit code -9 / SIGKILL) with exponential backoff:
+    # the kernel may need time to reclaim memory after killing the process.
+    max_oom_retries = 2
+    last_error = None
+    for attempt in range(max_oom_retries + 1):
+        started = await asyncio.get_event_loop().run_in_executor(None, manager.start)
+        if started:
+            break
+
+        # Check if the process was killed by OOM (SIGKILL = exit code -9)
+        exit_code = manager.process.returncode if manager.process else None
+        is_oom = exit_code == -9
+
+        if not is_oom or attempt >= max_oom_retries:
+            last_error = f"Server start failed (exit code: {exit_code})"
+            break
+
+        backoff = 2 ** (attempt + 1)  # 4s, 8s
+        logger.warning(
+            f"OOM detected on server start for model {model.id}, "
+            f"retrying in {backoff}s (attempt {attempt + 1}/{max_oom_retries})"
+        )
+        await asyncio.sleep(backoff)
+
     if not started:
         server_cache.remove(server_id)
-        raise HTTPException(status_code=500, detail="Failed to start llama.cpp server")
+        detail = last_error or "Failed to start llama.cpp server"
+        raise HTTPException(status_code=500, detail=detail)
 
     # Mark as ready
     server_cache.mark_ready(server_id)
