@@ -87,6 +87,101 @@ gpu_power_watts = Gauge(
     registry=_registry,
 )
 
+# --- Additional GPU metrics from DCGM Exporter ---
+
+gpu_compute_utilization = Gauge(
+    "gpu_compute_utilization_percent",
+    "GPU compute utilization percentage",
+    ["gpu_index"],
+    registry=_registry,
+)
+
+gpu_memory_bandwidth_utilization = Gauge(
+    "gpu_memory_bandwidth_utilization_percent",
+    "GPU memory bandwidth utilization percentage",
+    ["gpu_index"],
+    registry=_registry,
+)
+
+gpu_sm_clock_mhz = Gauge(
+    "gpu_sm_clock_mhz",
+    "GPU SM clock speed in MHz",
+    ["gpu_index"],
+    registry=_registry,
+)
+
+gpu_mem_clock_mhz = Gauge(
+    "gpu_mem_clock_mhz",
+    "GPU memory clock speed in MHz",
+    ["gpu_index"],
+    registry=_registry,
+)
+
+gpu_fan_speed_percent = Gauge(
+    "gpu_fan_speed_percent",
+    "GPU fan speed percentage",
+    ["gpu_index"],
+    registry=_registry,
+)
+
+gpu_ecc_errors_total = Gauge(
+    "gpu_ecc_errors_total",
+    "GPU ECC error count",
+    ["gpu_index", "type"],  # type: "sbe_volatile", "dbe_volatile"
+    registry=_registry,
+)
+
+gpu_encoder_utilization = Gauge(
+    "gpu_encoder_utilization_percent",
+    "GPU video encoder utilization percentage",
+    ["gpu_index"],
+    registry=_registry,
+)
+
+gpu_decoder_utilization = Gauge(
+    "gpu_decoder_utilization_percent",
+    "GPU video decoder utilization percentage",
+    ["gpu_index"],
+    registry=_registry,
+)
+
+# --- Llama.cpp server metrics ---
+
+llama_server_tokens_per_second = Gauge(
+    "llama_server_tokens_per_second",
+    "Token generation rate (tokens/s)",
+    ["server_id", "model_id"],
+    registry=_registry,
+)
+
+llama_server_prompt_tokens_per_second = Gauge(
+    "llama_server_prompt_tokens_per_second",
+    "Prompt evaluation rate (tokens/s)",
+    ["server_id", "model_id"],
+    registry=_registry,
+)
+
+llama_server_ms_per_token = Gauge(
+    "llama_server_ms_per_token",
+    "Milliseconds per generated token",
+    ["server_id", "model_id"],
+    registry=_registry,
+)
+
+llama_server_tokens_evaluated_total = Gauge(
+    "llama_server_tokens_evaluated_total",
+    "Total tokens evaluated by the server",
+    ["server_id", "model_id"],
+    registry=_registry,
+)
+
+llama_server_tokens_predicted_total = Gauge(
+    "llama_server_tokens_predicted_total",
+    "Total tokens predicted by the server",
+    ["server_id", "model_id"],
+    registry=_registry,
+)
+
 
 class PrometheusMiddleware(BaseHTTPMiddleware):
     """Instrument every request with Prometheus counters and histograms."""

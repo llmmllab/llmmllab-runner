@@ -22,6 +22,8 @@ spec:
           hostPath:
             path: /models
             type: DirectoryOrCreate
+        - name: dcgm-uvm
+          emptyDir: {}
       containers:
         - name: llmmllab-runner
           image: 192.168.0.71:31500/llmmllab-runner:latest
@@ -92,6 +94,18 @@ spec:
               value: "llmmllab-runner"
             - name: TEMPO_ENDPOINT
               value: "http://tempo.llmmllab.svc.cluster.local:4317"
+            - name: DCGM_METRICS_ENABLED
+              value: "true"
+        - name: dcgm-exporter
+          image: nvcr.io/nvidia/k8s/dcgm-exporter:2.3.2-2.6.2-ubuntu20.04
+          ports:
+            - containerPort: 9400
+              protocol: TCP
+          securityContext:
+            privileged: true
+          volumeMounts:
+            - name: dcgm-uvm
+              mountPath: /usr/local/dcgm
   strategy:
     type: Recreate
 ---
@@ -122,6 +136,8 @@ spec:
           hostPath:
             path: /models
             type: DirectoryOrCreate
+        - name: dcgm-uvm
+          emptyDir: {}
       containers:
         - name: llmmllab-runner
           image: 192.168.0.71:31500/llmmllab-runner:latest
@@ -194,5 +210,17 @@ spec:
               value: "http://tempo.llmmllab.svc.cluster.local:4317"
             - name: GPU_POWER_CAP_PCT
               value: "80"
+            - name: DCGM_METRICS_ENABLED
+              value: "true"
+        - name: dcgm-exporter
+          image: nvcr.io/nvidia/k8s/dcgm-exporter:2.3.2-2.6.2-ubuntu20.04
+          ports:
+            - containerPort: 9400
+              protocol: TCP
+          securityContext:
+            privileged: true
+          volumeMounts:
+            - name: dcgm-uvm
+              mountPath: /usr/local/dcgm
   strategy:
     type: Recreate

@@ -31,3 +31,23 @@ PROXY_TIMEOUT = float(os.environ.get("PROXY_TIMEOUT", "600"))
 
 # GPU power cap: percentage of default TDP (0 to disable, 100 = no cap)
 GPU_POWER_CAP_PCT = float(os.environ.get("GPU_POWER_CAP_PCT", "85"))
+
+# DCGM Exporter integration
+DCGM_METRICS_ENABLED = os.environ.get("DCGM_METRICS_ENABLED", "true").lower() in (
+    "true",
+    "1",
+    "yes",
+)
+DCGM_EXPORTER_URL = os.environ.get(
+    "DCGM_EXPORTER_URL", "http://localhost:9400/metrics"
+)
+
+# Llama.cpp server metrics scraping interval (seconds)
+LLAMA_METRICS_INTERVAL_SEC = int(
+    os.environ.get("LLAMA_METRICS_INTERVAL_SEC", "15")
+)
+
+# DCGM metrics scrape interval (seconds)
+DCGM_METRICS_INTERVAL_SEC = int(
+    os.environ.get("DCGM_METRICS_INTERVAL_SEC", "15")
+)
