@@ -6,7 +6,7 @@ from typing import AsyncGenerator, Optional
 
 from fastapi import FastAPI
 
-from config import RUNNER_HOST, RUNNER_PORT, DCGM_METRICS_INTERVAL_SEC
+from config import RUNNER_HOST, RUNNER_PORT, DCGM_METRICS_INTERVAL_SEC, LLAMA_METRICS_INTERVAL_SEC
 from cache import ServerCache
 from queue import PriorityRequestQueue
 from routers import models as models_router
