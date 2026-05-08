@@ -31,3 +31,7 @@ PROXY_TIMEOUT = float(os.environ.get("PROXY_TIMEOUT", "600"))
 
 # GPU power cap: percentage of default TDP (0 to disable, 100 = no cap)
 GPU_POWER_CAP_PCT = float(os.environ.get("GPU_POWER_CAP_PCT", "85"))
+
+# Max retries when a llama.cpp server start fails due to OOM (SIGKILL / exit -9).
+# Set to 0 to disable OOM retries.
+SERVER_START_OOM_RETRIES = int(os.environ.get("SERVER_START_OOM_RETRIES", "2"))

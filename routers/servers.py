@@ -6,7 +6,7 @@ from typing import Any, Dict, Optional
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from config import RUNNER_PORT
+from config import RUNNER_PORT, SERVER_START_OOM_RETRIES
 from server_manager import LlamaCppServerManager
 from utils.hardware_manager import hardware_manager
 from utils.logging import llmmllogger
@@ -126,27 +126,31 @@ async def create_server(request: CreateServerRequest):
     )
 
     # Run blocking start() in a thread pool to avoid blocking the event loop.
-    # Retry on OOM (exit code -9 / SIGKILL) with exponential backoff:
-    # the kernel may need time to reclaim memory after killing the process.
-    max_oom_retries = 2
+    # Retry on transient failures (OOM, segfault, etc.) with exponential backoff:
+    # the kernel may need time to reclaim memory or release GPU resources.
+    max_retries = SERVER_START_OOM_RETRIES
     last_error = None
-    for attempt in range(max_oom_retries + 1):
+    for attempt in range(max_retries + 1):
         started = await asyncio.get_event_loop().run_in_executor(None, manager.start)
         if started:
             break
 
-        # Check if the process was killed by OOM (SIGKILL = exit code -9)
+        # Check for retryable exit codes:
+        #   -9  = SIGKILL (OOM killer)
+        #   -11 = SIGSEGV (segfault, often GPU driver / VRAM pressure)
+        #   -4  = SIGILL  (illegal instruction, sometimes CUDA driver mismatch)
         exit_code = manager.process.returncode if manager.process else None
-        is_oom = exit_code == -9
+        is_retryable = exit_code in (-9, -11, -4)
 
-        if not is_oom or attempt >= max_oom_retries:
+        if not is_retryable or attempt >= max_retries:
             last_error = f"Server start failed (exit code: {exit_code})"
             break
 
         backoff = 2 ** (attempt + 1)  # 4s, 8s
+        reason = "OOM" if exit_code == -9 else "segfault" if exit_code == -11 else "signal"
         logger.warning(
-            f"OOM detected on server start for model {model.id}, "
-            f"retrying in {backoff}s (attempt {attempt + 1}/{max_oom_retries})"
+            f"{reason} detected on server start for model {model.id}, "
+            f"retrying in {backoff}s (attempt {attempt + 1}/{max_retries})"
         )
         await asyncio.sleep(backoff)
 
