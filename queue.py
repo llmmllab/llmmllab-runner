@@ -15,11 +15,16 @@ Request sources:
   SYSTEM    — Background / system maintenance
 
 Aging policy:
-  LOW  → MEDIUM  after 60 seconds in queue
-  MEDIUM → HIGH  after 120 seconds in queue
+  LOW  → MEDIUM  after 60 seconds in queue (default)
+  MEDIUM → HIGH  after 120 seconds in queue (default)
+
+Both thresholds are configurable via environment variables:
+  QUEUE_AGING_LOW_TO_MEDIUM_SEC  (default: 60)
+  QUEUE_AGING_MEDIUM_TO_HIGH_SEC (default: 120)
 """
 
 import asyncio
+import os
 import time
 from dataclasses import dataclass, field
 from enum import Enum
@@ -55,8 +60,9 @@ SOURCE_MAP = {
 }
 
 # Aging thresholds (seconds in queue before promotion)
-AGING_LOW_TO_MEDIUM = 60
-AGING_MEDIUM_TO_HIGH = 120
+# Configurable via environment variables.
+AGING_LOW_TO_MEDIUM = int(os.environ.get("QUEUE_AGING_LOW_TO_MEDIUM_SEC", "60"))
+AGING_MEDIUM_TO_HIGH = int(os.environ.get("QUEUE_AGING_MEDIUM_TO_HIGH_SEC", "120"))
 
 
 @dataclass(order=True)

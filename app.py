@@ -6,7 +6,7 @@ from typing import AsyncGenerator, Optional
 
 from fastapi import FastAPI
 
-from config import RUNNER_HOST, RUNNER_PORT
+from config import RUNNER_HOST, RUNNER_PORT, DCGM_METRICS_INTERVAL_SEC
 from cache import ServerCache
 from queue import PriorityRequestQueue
 from routers import models as models_router
@@ -14,7 +14,12 @@ from routers import servers as servers_router
 from routers import metrics as metrics_router
 from proxy import router as proxy_router
 from middleware import RequestIdMiddleware, PrometheusMiddleware
-from middleware.runner_metrics import update_server_metrics, update_gpu_metrics
+from middleware.runner_metrics import (
+    update_server_metrics,
+    update_gpu_metrics,
+    update_dcgm_metrics,
+    update_llama_server_metrics,
+)
 from middleware.tracing import setup_tracing, shutdown_tracing
 from utils.hardware_manager import hardware_manager
 from utils.logging import llmmllogger
@@ -26,6 +31,7 @@ server_cache: ServerCache = None  # type: ignore
 request_queue: PriorityRequestQueue = None  # type: ignore
 _evict_task: Optional[asyncio.Task] = None
 _queue_aging_task: Optional[asyncio.Task] = None
+_metrics_task: Optional[asyncio.Task] = None
 
 # Module-level ModelLoader singleton (avoids re-instantiation on every health check)
 _model_loader = None
@@ -42,7 +48,7 @@ def get_model_loader():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
-    global server_cache, request_queue, _evict_task, _queue_aging_task
+    global server_cache, request_queue, _evict_task, _queue_aging_task, _metrics_task
     logger.info("Runner starting up")
     server_cache = ServerCache()
     logger.info("ServerCache initialized")
@@ -89,23 +95,34 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     _evict_task = asyncio.create_task(evict_idle_servers())
 
+    # Start periodic DCGM + llama.cpp metrics scraping task
+    async def scrape_extended_metrics():
+        while True:
+            await asyncio.sleep(DCGM_METRICS_INTERVAL_SEC)
+            try:
+                # DCGM GPU metrics
+                await update_dcgm_metrics()
+                # Llama.cpp server metrics
+                if server_cache:
+                    await update_llama_server_metrics(server_cache)
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.debug(f"Extended metrics scrape failed: {e}")
+
+    _metrics_task = asyncio.create_task(scrape_extended_metrics())
+
     yield
 
     logger.info("Runner shutting down")
-    # Cancel the queue aging task
-    if _queue_aging_task:
-        _queue_aging_task.cancel()
-        try:
-            await _queue_aging_task
-        except asyncio.CancelledError:
-            pass
-    # Cancel the background eviction task before stopping servers
-    if _evict_task:
-        _evict_task.cancel()
-        try:
-            await _evict_task
-        except asyncio.CancelledError:
-            pass
+    # Cancel the background tasks before stopping servers
+    for task in (_queue_aging_task, _evict_task, _metrics_task):
+        if task:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
     if server_cache:
         server_cache.stop_all()
     # Shutdown tracing
