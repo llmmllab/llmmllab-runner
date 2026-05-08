@@ -6,7 +6,7 @@ from typing import Any, Dict, Optional
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from config import RUNNER_PORT
+from config import RUNNER_PORT, SERVER_START_OOM_RETRIES
 from server_manager import LlamaCppServerManager
 from utils.hardware_manager import hardware_manager
 from utils.logging import llmmllogger
@@ -125,11 +125,39 @@ async def create_server(request: CreateServerRequest):
         manager=manager,
     )
 
-    # Run blocking start() in a thread pool to avoid blocking the event loop
-    started = await asyncio.get_event_loop().run_in_executor(None, manager.start)
+    # Run blocking start() in a thread pool to avoid blocking the event loop.
+    # Retry on transient failures (OOM, segfault, etc.) with exponential backoff:
+    # the kernel may need time to reclaim memory or release GPU resources.
+    max_retries = SERVER_START_OOM_RETRIES
+    last_error = None
+    for attempt in range(max_retries + 1):
+        started = await asyncio.get_event_loop().run_in_executor(None, manager.start)
+        if started:
+            break
+
+        # Check for retryable exit codes:
+        #   -9  = SIGKILL (OOM killer)
+        #   -11 = SIGSEGV (segfault, often GPU driver / VRAM pressure)
+        #   -4  = SIGILL  (illegal instruction, sometimes CUDA driver mismatch)
+        exit_code = manager.process.returncode if manager.process else None
+        is_retryable = exit_code in (-9, -11, -4)
+
+        if not is_retryable or attempt >= max_retries:
+            last_error = f"Server start failed (exit code: {exit_code})"
+            break
+
+        backoff = 2 ** (attempt + 1)  # 4s, 8s
+        reason = "OOM" if exit_code == -9 else "segfault" if exit_code == -11 else "signal"
+        logger.warning(
+            f"{reason} detected on server start for model {model.id}, "
+            f"retrying in {backoff}s (attempt {attempt + 1}/{max_retries})"
+        )
+        await asyncio.sleep(backoff)
+
     if not started:
         server_cache.remove(server_id)
-        raise HTTPException(status_code=500, detail="Failed to start llama.cpp server")
+        detail = last_error or "Failed to start llama.cpp server"
+        raise HTTPException(status_code=500, detail=detail)
 
     # Mark as ready
     server_cache.mark_ready(server_id)
