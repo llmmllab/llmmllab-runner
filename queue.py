@@ -69,8 +69,8 @@ class QueuedRequest:
     """
     sort_key: tuple = field(init=False)
     priority: Priority
-    enqueue_time: float = field(default_factory=time.time)
     request: Any = field(compare=False)
+    enqueue_time: float = field(default_factory=time.time)
     source: RequestSource = field(default=RequestSource.USER, compare=False)
     future: asyncio.Future = field(default=None, compare=False, repr=False)
     _original_priority: Priority = field(init=False, compare=False)
