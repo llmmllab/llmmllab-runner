@@ -35,3 +35,23 @@ GPU_POWER_CAP_PCT = float(os.environ.get("GPU_POWER_CAP_PCT", "85"))
 # Max retries when a llama.cpp server start fails due to OOM (SIGKILL / exit -9).
 # Set to 0 to disable OOM retries.
 SERVER_START_OOM_RETRIES = int(os.environ.get("SERVER_START_OOM_RETRIES", "2"))
+
+# DCGM Exporter integration
+DCGM_METRICS_ENABLED = os.environ.get("DCGM_METRICS_ENABLED", "true").lower() in (
+    "true",
+    "1",
+    "yes",
+)
+DCGM_EXPORTER_URL = os.environ.get(
+    "DCGM_EXPORTER_URL", "http://localhost:9400/metrics"
+)
+
+# Llama.cpp server metrics scraping interval (seconds)
+LLAMA_METRICS_INTERVAL_SEC = int(
+    os.environ.get("LLAMA_METRICS_INTERVAL_SEC", "15")
+)
+
+# DCGM metrics scrape interval (seconds)
+DCGM_METRICS_INTERVAL_SEC = int(
+    os.environ.get("DCGM_METRICS_INTERVAL_SEC", "15")
+)
