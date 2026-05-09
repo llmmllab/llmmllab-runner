@@ -145,10 +145,21 @@ class BaseServerManager(ABC):
                     self._logger.info(
                         f"Server started successfully on port {self.port}"
                     )
-                    # Validate actual context size after boot
-                    self._validate_context_size()
+                    # Validate actual context size after boot — stop server
+                    # if llama.cpp reduced context below the configured minimum.
+                    if not self._validate_context_size():
+                        self._logger.error(
+                            "Context validation failed — stopping server"
+                        )
+                        self.stop()
+                        return False
                     return True
                 else:
+                    # Check if the process died with SIGSEGV (exit code -11)
+                    # This often indicates the model's num_ctx is too large for
+                    # available memory. Retry with a reduced context window.
+                    if self.process and self.process.returncode == -11:
+                        return self._retry_with_reduced_context(args)
                     self._logger.error(
                         "Server failed to start within timeout - cleaning up"
                     )
@@ -158,8 +169,166 @@ class BaseServerManager(ABC):
                 self._logger.error(f"Failed to start server: {e}")
                 return False
 
-    def _validate_context_size(self) -> None:
-        """Check the actual context size after server boot and warn if reduced."""
+    def _retry_with_reduced_context(self, original_args: List[str]) -> bool:
+        """Retry server start with reduced num_ctx after SIGSEGV.
+
+        When the server crashes with exit code -11 (SIGSEGV) during startup,
+        it's often because the requested context window is too large for
+        available memory. This method progressively reduces num_ctx and
+        retries up to 3 times.
+
+        Args:
+            original_args: The original command line arguments.
+
+        Returns:
+            True if the server started successfully, False otherwise.
+        """
+        import re
+
+        ctx_match = re.search(r'--ctx-size\s+(\d+)', ' '.join(original_args))
+        if not ctx_match:
+            self._logger.warning(
+                "Cannot reduce context: --ctx-size not found in server args"
+            )
+            return False
+
+        original_ctx = int(ctx_match.group(1))
+        self._logger.warning(
+            f"Server crashed with SIGSEGV (exit code -11). "
+            f"Retrying with reduced context window (original: {original_ctx})"
+        )
+
+        minimum_ctx = self._get_minimum_ctx()
+        for attempt in range(1, 4):
+            reduced_ctx = int(original_ctx * (0.5 ** attempt))
+            reduced_ctx = max(reduced_ctx, minimum_ctx)  # Respect model-configured minimum
+
+            retry_args = [
+                a if not a.startswith('--ctx-size')
+                else f'--ctx-size {reduced_ctx}'
+                for a in original_args
+            ]
+            # Also replace the value after --ctx-size
+            retry_args = []
+            for i, a in enumerate(original_args):
+                if a == '--ctx-size' and i + 1 < len(original_args):
+                    retry_args.append('--ctx-size')
+                    retry_args.append(str(reduced_ctx))
+                else:
+                    retry_args.append(a)
+
+            self._logger.info(
+                f"Retry attempt {attempt}/3 with num_ctx={reduced_ctx} "
+                f"(reduced from {original_ctx})"
+            )
+
+            # Kill the crashed process
+            if self.process:
+                try:
+                    self.process.kill()
+                    self.process.wait(timeout=5)
+                except Exception:
+                    pass
+
+            self.process = subprocess.Popen(
+                retry_args,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                stdin=subprocess.DEVNULL,
+                text=True,
+                bufsize=1,
+            )
+            self.pid = self.process.pid
+
+            # Stream output
+            def _stream_pipe(pipe, log_fn):
+                try:
+                    if not pipe:
+                        return
+                    with pipe:
+                        for line in iter(pipe.readline, ""):
+                            if line:
+                                log_fn(line.rstrip())
+                except Exception:
+                    pass
+
+            if self.process.stdout:
+                t_out = threading.Thread(
+                    target=_stream_pipe,
+                    args=(self.process.stdout, self._logger.debug),
+                    daemon=True,
+                )
+                t_out.start()
+
+            if self.process.stderr:
+                t_err = threading.Thread(
+                    target=_stream_pipe,
+                    args=(self.process.stderr, self._logger.debug),
+                    daemon=True,
+                )
+                t_err.start()
+
+            if self._wait_for_server():
+                self._logger.info(
+                    f"Server started successfully with reduced context "
+                    f"num_ctx={reduced_ctx} (original: {original_ctx})"
+                )
+                if not self._validate_context_size():
+                    self._logger.error(
+                        "Context validation failed on retry — stopping server"
+                    )
+                    self.stop()
+                    continue
+                return True
+
+            # If this retry also SIGSEGV, don't recurse — continue the loop
+            if self.process and self.process.returncode == -11:
+                self._logger.warning(
+                    f"Retry attempt {attempt} also crashed with SIGSEGV, "
+                    f"trying with even smaller context"
+                )
+                continue
+
+            self._logger.error(
+                f"Retry attempt {attempt} failed (exit code: "
+                f"{self.process.returncode if self.process else 'unknown'})"
+            )
+
+        self._logger.error(
+            f"All retry attempts failed for model {self.model.name}. "
+            f"Server cannot start with any reduced context window. "
+            f"Original num_ctx: {original_ctx}."
+        )
+        return False
+
+    def _get_minimum_ctx(self) -> int:
+        """Compute the minimum acceptable context size from model config.
+
+        Uses ctx_size_reduction_limit (a fraction of num_ctx) to determine
+        how far llama.cpp is allowed to auto-reduce the context window.
+        Falls back to 2048 as an absolute floor.
+        """
+        configured_ctx = (
+            getattr(self.model.parameters, "num_ctx", None) or 90000
+        )
+        reduction_limit = (
+            getattr(self.model.parameters, "ctx_size_reduction_limit", None)
+            if self.model.parameters
+            else None
+        )
+        if reduction_limit is None:
+            reduction_limit = 0.5
+        import math
+
+        return max(math.ceil(configured_ctx * reduction_limit), 2048)
+
+    def _validate_context_size(self) -> bool:
+        """Check the actual context size after server boot.
+
+        Returns True if context is acceptable, False if it was reduced
+        below the configured minimum (ctx_size_reduction_limit * num_ctx).
+        When context is below minimum, the server is stopped and start() fails.
+        """
         try:
             models_endpoint = self.get_api_endpoint("/v1/models")
             resp = requests.get(models_endpoint, timeout=5)
@@ -178,13 +347,23 @@ class BaseServerManager(ABC):
                             or 90000
                         )
                         actual_ctx = int(actual_ctx)
-                        if actual_ctx < configured_ctx:
+                        minimum_ctx = self._get_minimum_ctx()
+
+                        if actual_ctx < minimum_ctx:
+                            self._logger.error(
+                                f"Context size reduced below minimum: "
+                                f"configured={configured_ctx}, actual={actual_ctx}, "
+                                f"minimum={minimum_ctx} ({actual_ctx/configured_ctx*100:.0f}% of requested). "
+                                f"Server cannot serve reliably — shutting down. "
+                                f"Reduce num_ctx in model config or increase GPU VRAM."
+                            )
+                            return False
+                        elif actual_ctx < configured_ctx:
                             self._logger.warning(
-                                f"Context size reduced by server: "
+                                f"Context size reduced by server (within acceptable range): "
                                 f"configured={configured_ctx}, actual={actual_ctx} "
-                                f"({actual_ctx/configured_ctx*100:.0f}% of requested). "
-                                f"Conversations may fail when exceeding {actual_ctx} tokens. "
-                                f"Consider reducing num_ctx in models config or increasing GPU VRAM."
+                                f"({actual_ctx/configured_ctx*100:.0f}% of requested, minimum={minimum_ctx}). "
+                                f"Conversations may fail when exceeding {actual_ctx} tokens."
                             )
                         else:
                             self._logger.debug(
@@ -192,6 +371,7 @@ class BaseServerManager(ABC):
                             )
         except Exception as e:
             self._logger.debug(f"Could not validate context size: {e}")
+        return True
 
     def _wait_for_server(self) -> bool:
         """Wait for server to become ready."""
