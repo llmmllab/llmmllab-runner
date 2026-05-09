@@ -158,9 +158,12 @@ class LlamaCppArgumentBuilder:
         # llama.cpp cannot reduce context below ctx_size_reduction_limit * num_ctx.
         # This prevents silent context shrinkage that breaks conversations.
         ctx_size = params.num_ctx or 90000
-        reduction_limit = params.ctx_size_reduction_limit if params.ctx_size_reduction_limit is not None else 0.5
-        fit_ctx = max(math.ceil(ctx_size * reduction_limit), 2048)
-        config["fit_ctx"] = fit_ctx
+        if params.ctx_size_reduction_limit is not None:
+            config["fit"] = "on"
+            fit_ctx = max(math.ceil(ctx_size * params.ctx_size_reduction_limit), 4096)
+            config["fit_ctx"] = fit_ctx
+        else:
+            config["fit"] = "off"
 
         if LOG_LEVEL.lower() == "trace":
             config["verbose"] = True
