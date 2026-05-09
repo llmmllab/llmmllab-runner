@@ -8,6 +8,7 @@ from fastapi import FastAPI
 
 from config import RUNNER_HOST, RUNNER_PORT, DCGM_METRICS_INTERVAL_SEC, LLAMA_METRICS_INTERVAL_SEC
 from cache import ServerCache
+from queue import PriorityRequestQueue
 from routers import models as models_router
 from routers import servers as servers_router
 from routers import metrics as metrics_router
@@ -27,7 +28,9 @@ logger = llmmllogger.bind(component="RunnerApp")
 
 # Global cache instance (initialized at startup)
 server_cache: ServerCache = None  # type: ignore
+request_queue: PriorityRequestQueue = None  # type: ignore
 _evict_task: Optional[asyncio.Task] = None
+_queue_aging_task: Optional[asyncio.Task] = None
 _metrics_task: Optional[asyncio.Task] = None
 
 # Module-level ModelLoader singleton (avoids re-instantiation on every health check)
@@ -45,10 +48,35 @@ def get_model_loader():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
-    global server_cache, _evict_task, _metrics_task
+    global server_cache, request_queue, _evict_task, _queue_aging_task, _metrics_task
     logger.info("Runner starting up")
     server_cache = ServerCache()
     logger.info("ServerCache initialized")
+
+    # Initialize priority request queue
+    request_queue = PriorityRequestQueue()
+    logger.info("PriorityRequestQueue initialized")
+
+    # Background task: process priority queue by releasing items in order.
+    # When the queue has items, release the highest-priority one and wait
+    # before releasing the next. This prevents all queued requests from
+    # hitting the server creation path simultaneously.
+    async def queue_processor():
+        while True:
+            item = await request_queue.dequeue()
+            if item is None:
+                await asyncio.sleep(0.5)
+                continue
+
+            logger.info(
+                f"Queue processor releasing request for model "
+                f"{item.request.model_id} at priority {item.priority.name} "
+                f"(source: {item.source.value})"
+            )
+            if not item.future.done():
+                item.future.set_result(True)
+
+    _queue_aging_task = asyncio.create_task(queue_processor())
 
     # Start periodic eviction task
     async def evict_idle_servers():
@@ -88,7 +116,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     logger.info("Runner shutting down")
     # Cancel the background tasks before stopping servers
-    for task in (_evict_task, _metrics_task):
+    for task in (_queue_aging_task, _evict_task, _metrics_task):
         if task:
             task.cancel()
             try:
