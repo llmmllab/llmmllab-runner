@@ -59,7 +59,10 @@ class TestArgumentBuilderFitCtx:
         mock.draft_model = None
         return mock
 
-    @patch("server_manager.llamacpp_argument_builder.LLAMA_SERVER_EXECUTABLE", "/fake/llama-server")
+    @patch(
+        "server_manager.llamacpp_argument_builder.LLAMA_SERVER_EXECUTABLE",
+        "/fake/llama-server",
+    )
     def test_fit_ctx_computed_from_reduction_limit(self):
         """fit-ctx = ceil(num_ctx * reduction_limit)."""
         from server_manager.llamacpp_argument_builder import LlamaCppArgumentBuilder
@@ -70,7 +73,10 @@ class TestArgumentBuilderFitCtx:
         args_str = " ".join(args)
         assert "--fit-ctx 20480" in args_str
 
-    @patch("server_manager.llamacpp_argument_builder.LLAMA_SERVER_EXECUTABLE", "/fake/llama-server")
+    @patch(
+        "server_manager.llamacpp_argument_builder.LLAMA_SERVER_EXECUTABLE",
+        "/fake/llama-server",
+    )
     def test_fit_ctx_with_custom_limit(self):
         """fit-ctx respects custom reduction limit."""
         from server_manager.llamacpp_argument_builder import LlamaCppArgumentBuilder
@@ -81,19 +87,25 @@ class TestArgumentBuilderFitCtx:
         args_str = " ".join(args)
         assert "--fit-ctx 30720" in args_str
 
-    @patch("server_manager.llamacpp_argument_builder.LLAMA_SERVER_EXECUTABLE", "/fake/llama-server")
-    def test_fit_ctx_floored_at_2048(self):
-        """fit-ctx has a 2048 absolute floor."""
+    @patch(
+        "server_manager.llamacpp_argument_builder.LLAMA_SERVER_EXECUTABLE",
+        "/fake/llama-server",
+    )
+    def test_fit_ctx_floored_at_4096(self):
+        """fit-ctx has a 4096 absolute floor."""
         from server_manager.llamacpp_argument_builder import LlamaCppArgumentBuilder
 
-        model = self._make_model(num_ctx=2048, reduction_limit=0.5)
+        model = self._make_model(num_ctx=4096, reduction_limit=0.5)
         builder = LlamaCppArgumentBuilder(model, port=8080)
         args = builder.build_args()
         args_str = " ".join(args)
-        # ceil(2048 * 0.5) = 1024, but floor is 2048
-        assert "--fit-ctx 2048" in args_str
+        # ceil(4096 * 0.5) = 2048, but floor is 4096
+        assert "--fit-ctx 4096" in args_str
 
-    @patch("server_manager.llamacpp_argument_builder.LLAMA_SERVER_EXECUTABLE", "/fake/llama-server")
+    @patch(
+        "server_manager.llamacpp_argument_builder.LLAMA_SERVER_EXECUTABLE",
+        "/fake/llama-server",
+    )
     def test_fit_ctx_uses_default_limit_when_not_set(self):
         """When ctx_size_reduction_limit is default (0.5), fit-ctx is half of num_ctx."""
         from server_manager.llamacpp_argument_builder import LlamaCppArgumentBuilder
