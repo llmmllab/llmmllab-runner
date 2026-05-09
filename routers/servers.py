@@ -1,7 +1,7 @@
 """Server lifecycle router - create, status, delete, release servers."""
 
 import asyncio
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
@@ -13,9 +13,54 @@ from utils.logging import llmmllogger
 from utils.model_loader import ModelLoader
 from middleware.runner_metrics import record_server_start
 
+
+# Error reason codes for structured error responses
+MODEL_NOT_CONFIGURED = "model_not_configured"
+MODEL_NOT_AVAILABLE = "model_not_available"
+INSUFFICIENT_RESOURCES = "insufficient_resources"
+SERVER_START_FAILED = "server_start_failed"
+
 logger = llmmllogger.bind(component="servers_router")
 router = APIRouter()
 model_loader = ModelLoader()
+
+
+def _build_error_response(
+    reason: str,
+    message: str,
+    *,
+    requested_model: Optional[str] = None,
+    available_models: Optional[List[str]] = None,
+    details: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Build a structured error response with context for debugging.
+
+    Returns a dict suitable for use as the ``detail`` field in HTTPException.
+    The structure is:
+        {
+            "reason": <error_code>,
+            "message": <human_readable>,
+            "requested_model": <model_id>,
+            "available_models": [<list of model IDs on this runner>],
+            "details": {<extra context>}
+        }
+    """
+    response = {
+        "reason": reason,
+        "message": message,
+    }
+    if requested_model is not None:
+        response["requested_model"] = requested_model
+    if available_models is not None:
+        response["available_models"] = available_models
+    if details is not None:
+        response["details"] = details
+    return response
+
+
+def _get_available_model_ids() -> List[str]:
+    """Return a sorted list of model IDs configured on this runner."""
+    return sorted(model_loader.get_available_models().keys())
 
 
 class CreateServerRequest(BaseModel):
@@ -69,9 +114,18 @@ async def create_server(request: CreateServerRequest):
 
     model = model_loader.get_model_by_id(request.model_id)
     if not model:
-        raise HTTPException(
-            status_code=404, detail=f"Model {request.model_id} not found"
+        available = _get_available_model_ids()
+        detail = _build_error_response(
+            reason=MODEL_NOT_CONFIGURED,
+            message=f"Model '{request.model_id}' is not configured on this runner",
+            requested_model=request.model_id,
+            available_models=available if len(available) <= 20 else None,
         )
+        logger.warning(
+            f"Model not configured: '{request.model_id}'. "
+            f"Available models on this runner: {len(available)}"
+        )
+        raise HTTPException(status_code=404, detail=detail)
 
     assert model.id
     # Try to acquire an existing healthy server first
@@ -108,7 +162,11 @@ async def create_server(request: CreateServerRequest):
                 )
         raise HTTPException(
             status_code=500,
-            detail=f"Server for model {model.id} failed to become ready",
+            detail=_build_error_response(
+                reason=SERVER_START_FAILED,
+                message=f"Server for model '{model.id}' failed to become ready within 120s",
+                requested_model=model.id,
+            ),
         )
 
     # Evict idle servers if needed for VRAM
@@ -156,7 +214,40 @@ async def create_server(request: CreateServerRequest):
 
     if not started:
         server_cache.remove(server_id)
-        detail = last_error or "Failed to start llama.cpp server"
+
+        # Provide a structured error with resource context
+        exit_code = None
+        if manager.process:
+            exit_code = manager.process.returncode
+
+        if exit_code in (-9, -11):
+            # OOM or segfault — likely insufficient resources
+            available_vram = hardware_manager.available_vram_bytes()
+            model_size = _estimate_model_size(model)
+            detail = _build_error_response(
+                reason=INSUFFICIENT_RESOURCES,
+                message=(
+                    f"Failed to start server for model '{model.id}': "
+                    f"insufficient resources (exit code {exit_code}). "
+                    f"Estimated model size: {model_size / (1024**3):.1f} GB, "
+                    f"available VRAM: {available_vram / (1024**3):.1f} GB"
+                ),
+                requested_model=model.id,
+                details={
+                    "exit_code": exit_code,
+                    "estimated_model_size_bytes": int(model_size),
+                    "available_vram_bytes": int(available_vram),
+                    "retries_attempted": max_retries,
+                },
+            )
+        else:
+            detail = _build_error_response(
+                reason=SERVER_START_FAILED,
+                message=last_error or f"Failed to start llama.cpp server for model '{model.id}'",
+                requested_model=model.id,
+                details={"exit_code": exit_code} if exit_code is not None else {},
+            )
+
         raise HTTPException(status_code=500, detail=detail)
 
     # Mark as ready
