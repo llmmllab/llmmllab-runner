@@ -1,4 +1,4 @@
-"""Comprehensive tests for the priority request queue (queue.py).
+"""Comprehensive tests for the priority request queue (task_queue.py).
 
 Covers:
   - Priority enum ordering and values
@@ -30,16 +30,12 @@ from unittest.mock import patch
 
 import pytest
 
-# Ensure the project root is first on sys.path so our queue.py shadows stdlib
+# Ensure the project root is first on sys.path
 _project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _project_root not in sys.path:
     sys.path.insert(0, _project_root)
 
-# Force reimport of the project's queue module (not stdlib)
-if "queue" in sys.modules:
-    del sys.modules["queue"]
-
-import queue as queue_module  # noqa: E402  # project's queue.py
+import task_queue as queue_module  # noqa: E402
 
 AGING_LOW_TO_MEDIUM = queue_module.AGING_LOW_TO_MEDIUM
 AGING_MEDIUM_TO_HIGH = queue_module.AGING_MEDIUM_TO_HIGH

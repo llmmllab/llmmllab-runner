@@ -7,7 +7,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 from config import RUNNER_PORT, SERVER_START_OOM_RETRIES
-from queue import Priority, RequestSource, parse_priority_header, parse_source_header
+from task_queue import Priority, RequestSource, parse_priority_header, parse_source_header
 from server_manager import LlamaCppServerManager
 from utils.hardware_manager import hardware_manager
 from utils.logging import llmmllogger

@@ -8,7 +8,7 @@ from fastapi import FastAPI
 
 from config import RUNNER_HOST, RUNNER_PORT, DCGM_METRICS_INTERVAL_SEC, LLAMA_METRICS_INTERVAL_SEC
 from cache import ServerCache
-from queue import PriorityRequestQueue
+from task_queue import PriorityRequestQueue
 from routers import models as models_router
 from routers import servers as servers_router
 from routers import metrics as metrics_router
