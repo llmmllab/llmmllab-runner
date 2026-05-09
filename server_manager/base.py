@@ -149,6 +149,11 @@ class BaseServerManager(ABC):
                     self._validate_context_size()
                     return True
                 else:
+                    # Check if the process died with SIGSEGV (exit code -11)
+                    # This often indicates the model's num_ctx is too large for
+                    # available memory. Retry with a reduced context window.
+                    if self.process and self.process.returncode == -11:
+                        return self._retry_with_reduced_context(args)
                     self._logger.error(
                         "Server failed to start within timeout - cleaning up"
                     )
@@ -157,6 +162,132 @@ class BaseServerManager(ABC):
             except Exception as e:
                 self._logger.error(f"Failed to start server: {e}")
                 return False
+
+    def _retry_with_reduced_context(self, original_args: List[str]) -> bool:
+        """Retry server start with reduced num_ctx after SIGSEGV.
+
+        When the server crashes with exit code -11 (SIGSEGV) during startup,
+        it's often because the requested context window is too large for
+        available memory. This method progressively reduces num_ctx and
+        retries up to 3 times.
+
+        Args:
+            original_args: The original command line arguments.
+
+        Returns:
+            True if the server started successfully, False otherwise.
+        """
+        import re
+
+        ctx_match = re.search(r'--ctx-size\s+(\d+)', ' '.join(original_args))
+        if not ctx_match:
+            self._logger.warning(
+                "Cannot reduce context: --ctx-size not found in server args"
+            )
+            return False
+
+        original_ctx = int(ctx_match.group(1))
+        self._logger.warning(
+            f"Server crashed with SIGSEGV (exit code -11). "
+            f"Retrying with reduced context window (original: {original_ctx})"
+        )
+
+        for attempt in range(1, 4):
+            reduced_ctx = int(original_ctx * (0.5 ** attempt))
+            reduced_ctx = max(reduced_ctx, 4096)  # Minimum sensible context
+
+            retry_args = [
+                a if not a.startswith('--ctx-size')
+                else f'--ctx-size {reduced_ctx}'
+                for a in original_args
+            ]
+            # Also replace the value after --ctx-size
+            retry_args = []
+            for i, a in enumerate(original_args):
+                if a == '--ctx-size' and i + 1 < len(original_args):
+                    retry_args.append('--ctx-size')
+                    retry_args.append(str(reduced_ctx))
+                else:
+                    retry_args.append(a)
+
+            self._logger.info(
+                f"Retry attempt {attempt}/3 with num_ctx={reduced_ctx} "
+                f"(reduced from {original_ctx})"
+            )
+
+            # Kill the crashed process
+            if self.process:
+                try:
+                    self.process.kill()
+                    self.process.wait(timeout=5)
+                except Exception:
+                    pass
+
+            self.process = subprocess.Popen(
+                retry_args,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                stdin=subprocess.DEVNULL,
+                text=True,
+                bufsize=1,
+            )
+            self.pid = self.process.pid
+
+            # Stream output
+            def _stream_pipe(pipe, log_fn):
+                try:
+                    if not pipe:
+                        return
+                    with pipe:
+                        for line in iter(pipe.readline, ""):
+                            if line:
+                                log_fn(line.rstrip())
+                except Exception:
+                    pass
+
+            if self.process.stdout:
+                t_out = threading.Thread(
+                    target=_stream_pipe,
+                    args=(self.process.stdout, self._logger.debug),
+                    daemon=True,
+                )
+                t_out.start()
+
+            if self.process.stderr:
+                t_err = threading.Thread(
+                    target=_stream_pipe,
+                    args=(self.process.stderr, self._logger.debug),
+                    daemon=True,
+                )
+                t_err.start()
+
+            if self._wait_for_server():
+                self._logger.info(
+                    f"Server started successfully with reduced context "
+                    f"num_ctx={reduced_ctx} (original: {original_ctx})"
+                )
+                self._validate_context_size()
+                return True
+
+            # If this retry also SIGSEGV, don't recurse — continue the loop
+            if self.process and self.process.returncode == -11:
+                self._logger.warning(
+                    f"Retry attempt {attempt} also crashed with SIGSEGV, "
+                    f"trying with even smaller context"
+                )
+                continue
+
+            self._logger.error(
+                f"Retry attempt {attempt} failed (exit code: "
+                f"{self.process.returncode if self.process else 'unknown'})"
+            )
+
+        self._logger.error(
+            f"All retry attempts failed for model {self.model.name}. "
+            f"Server cannot start with any reduced context window. "
+            f"Original num_ctx: {original_ctx}."
+        )
+        return False
 
     def _validate_context_size(self) -> None:
         """Check the actual context size after server boot and warn if reduced."""
