@@ -5,6 +5,7 @@ Builds a config dict from model parameters, then serializes it directly
 to a command-line argument list.
 """
 
+import math
 import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -152,6 +153,14 @@ class LlamaCppArgumentBuilder:
             config["reasoning_budget"] = 16384
         else:
             config["reasoning"] = "off"
+
+        # Control llama.cpp's --fit auto-reduction: set --fit-ctx so that
+        # llama.cpp cannot reduce context below ctx_size_reduction_limit * num_ctx.
+        # This prevents silent context shrinkage that breaks conversations.
+        ctx_size = params.num_ctx or 90000
+        reduction_limit = params.ctx_size_reduction_limit if params.ctx_size_reduction_limit is not None else 0.5
+        fit_ctx = max(math.ceil(ctx_size * reduction_limit), 2048)
+        config["fit_ctx"] = fit_ctx
 
         if LOG_LEVEL.lower() == "trace":
             config["verbose"] = True

@@ -22,6 +22,7 @@ model_loader = ModelLoader()
 class CreateServerRequest(BaseModel):
     model_id: str
     priority: int = 10
+    num_ctx: Optional[int] = None
 
 
 def _int_to_priority(value: int) -> Priority:
@@ -137,6 +138,35 @@ async def create_server(request: Request, body: CreateServerRequest):
         )
 
     assert model.id
+
+    # Guard: refuse to start a server when the requested context exceeds
+    # what the model can provide. The runner knows n_ctx from the model
+    # definition, so it can reject undersized requests before spinning up
+    # a llama.cpp process.
+    requested_ctx = body.num_ctx
+    model_ctx = (model.parameters.num_ctx if model.parameters else None) or 90000
+    if requested_ctx is not None and requested_ctx > model_ctx:
+        logger.warning(
+            f"Context too large: requested={requested_ctx}, "
+            f"model_ctx={model_ctx} for model {model.id}"
+        )
+        raise HTTPException(
+            status_code=507,
+            detail={
+                "reason": "context_too_large",
+                "message": (
+                    f"Requested context size ({requested_ctx} tokens) exceeds "
+                    f"the model's configured context window ({model_ctx} tokens). "
+                    f"Reduce num_ctx or use a model with a larger context window."
+                ),
+                "requested_model": model.id,
+                "details": {
+                    "requested_num_ctx": requested_ctx,
+                    "model_num_ctx": model_ctx,
+                },
+            },
+        )
+
     # Try to acquire an existing healthy server first
     entry = server_cache.acquire_by_model(model.id)
     if entry is not None:
