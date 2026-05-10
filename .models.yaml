@@ -356,7 +356,6 @@
     # tensor_split: "0,1,1"
     main_gpu: 2
     # n_cpu_moe: 10
-    parallel: 1
   pipeline: llama
   lora_weights: []
   provider: llama_cpp
