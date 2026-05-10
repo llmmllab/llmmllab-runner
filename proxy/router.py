@@ -44,9 +44,11 @@ async def _stream_upstream(client, method, url, headers, body, server_id):
             ),
             stream=True,
         )
-    except httpx.RemoteProtocolError as exc:
-        # Upstream crashed before sending any response headers.
-        logger.error("Upstream server %s disconnected before response: %s", server_id, exc)
+    except httpx.HTTPError as exc:
+        # Upstream crashed, refused connection, or timed out before sending
+        # any response headers. Decrement use_count here because the caller's
+        # finally block skips it when is_streaming is True.
+        logger.error("Upstream server %s error before response: %s", server_id, exc)
         await client.aclose()
         from app import server_cache
         server_cache.decrement_use(server_id)
@@ -118,27 +120,40 @@ async def proxy_request(request: Request, server_id: str, path: str):
                     slots_resp = await check_client.get(f"{target_host}/slots")
                     if slots_resp.status_code == 200:
                         slots = slots_resp.json()
-                        all_busy = all(s.get("is_processing", False) for s in slots)
-                        if all_busy:
+                        # Only reject when there are slots AND all of them
+                        # are actively processing.  An empty slots list
+                        # (e.g., misconfigured server) should not be
+                        # treated as "all busy" — let the upstream handle it.
+                        if slots and all(
+                            s.get("is_processing", False) for s in slots
+                        ):
                             # Estimate remaining time from the busiest slot.
-                            # llama.cpp /slots returns:
-                            #   n_out_remaining — tokens left to generate
-                            #   t_token_ms      — average ms per token
-                            #   n_out_generated — tokens already generated
                             # Fall back to 30 s if we can't estimate.
                             retry_after = 30
                             for s in slots:
                                 if not s.get("is_processing"):
                                     continue
-                                remaining_tokens = s.get("n_out_remaining")
+                                next_token = s.get("next_token") or {}
+                                n_remain = next_token.get("n_remain")
+                                n_decoded = next_token.get("n_decoded", 0)
+                                # n_ctx is the slot's context window;
+                                # tokens left ≈ n_ctx - n_decoded when
+                                # n_remain is unavailable or negative.
+                                n_ctx = s.get("n_ctx", 0)
+                                if n_remain is None or n_remain < 0:
+                                    n_remain = max(n_ctx - n_decoded, 1)
+                                # Try to get token speed from the slot.
+                                # Fall back to 20 tokens/s if unavailable.
                                 t_token_ms = s.get("t_token_ms")
-                                if remaining_tokens is not None and t_token_ms is not None:
-                                    estimated_ms = remaining_tokens * t_token_ms
-                                    # Add 20% safety margin, round up to seconds
-                                    slot_retry = int(estimated_ms * 1.2 / 1000) + 1
-                                    retry_after = max(retry_after, slot_retry)
+                                if t_token_ms is None or t_token_ms <= 0:
+                                    t_token_ms = 50  # 20 tok/s default
+                                estimated_ms = n_remain * t_token_ms
+                                # Add 20% safety margin, round up to seconds
+                                slot_retry = int(estimated_ms * 1.2 / 1000) + 1
+                                retry_after = max(retry_after, slot_retry)
                             logger.warning(
-                                f"All slots busy, rejecting request (retry_after={retry_after}s)"
+                                f"All slots busy, rejecting request "
+                                f"(retry_after={retry_after}s)"
                             )
                             raise HTTPException(
                                 status_code=503,
