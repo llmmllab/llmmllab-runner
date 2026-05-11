@@ -337,7 +337,7 @@
     original_ctx: 2048
     clip_model_path: /models/qwen3.6/27b/mmproj.gguf
   parameters:
-    num_ctx: 200000
+    num_ctx: 400000
     repeat_last_n: -1
     repeat_penalty: 0.7
     temperature: 0.7
