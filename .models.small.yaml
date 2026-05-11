@@ -35,7 +35,7 @@
     n_gpu_layers: -1
     think: False
     kv_on_cpu: True
-    parallel: 2
+    parallel: 4
     # n_cpu_moe: 10
   pipeline: llama
   lora_weights: []

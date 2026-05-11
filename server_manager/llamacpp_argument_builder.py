@@ -98,6 +98,7 @@ class LlamaCppArgumentBuilder:
                 "mirostat": 1,
                 "cache_ram": 0,
                 "parallel": params.parallel or 4,
+                "kv_unified": True,
                 "repeat_penalty": params.repeat_penalty or 1.1,
                 "repeat_last_n": (
                     params.repeat_last_n if params.repeat_last_n is not None else 256
