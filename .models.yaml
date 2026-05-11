@@ -357,6 +357,7 @@
     main_gpu: 2
     # n_cpu_moe: 10
     # ctx_size_reduction_limit: 1.0
+    parallel: 2
   pipeline: llama
   lora_weights: []
   provider: llama_cpp
