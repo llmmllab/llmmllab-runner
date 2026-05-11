@@ -209,7 +209,7 @@ spec:
             - name: TEMPO_ENDPOINT
               value: "http://tempo.llmmllab.svc.cluster.local:4317"
             - name: GPU_POWER_CAP_PCT
-              value: "80"
+              value: "90"
             - name: DCGM_METRICS_ENABLED
               value: "true"
         - name: dcgm-exporter
