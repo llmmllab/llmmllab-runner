@@ -61,7 +61,7 @@ spec:
             - name: MODELS_FILE_PATH
               value: "/app/.models.yaml"
             - name: CACHE_TIMEOUT_MIN
-              value: "1"
+              value: "10"
             - name: EVICTION_TIMEOUT_MIN
               value: "30"
             - name: RUNNER_PORT
@@ -175,7 +175,7 @@ spec:
             - name: MODELS_FILE_PATH
               value: "/app/.models.small.yaml"
             - name: CACHE_TIMEOUT_MIN
-              value: "1"
+              value: "10"
             - name: EVICTION_TIMEOUT_MIN
               value: "30"
             - name: RUNNER_PORT
