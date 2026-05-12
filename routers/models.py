@@ -25,6 +25,16 @@ def list_models(task: Optional[str] = Query(default=None)):
     return result
 
 
+@router.get("/v1/models/default", response_model=Model)
+def get_default_model(task: Optional[str] = Query(default=None)):
+    """Get the default model for a given task."""
+    model = model_loader.get_default_model(task)
+    if model is None:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail="No default model configured")
+    return model
+
+
 @router.get("/v1/models/{model_id}")
 def get_model(model_id: str) -> Dict[str, Any]:
     """Get a specific model by ID.
