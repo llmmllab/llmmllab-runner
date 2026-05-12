@@ -255,6 +255,9 @@ class ModelLoader:
                     value = details
                 elif field_name == "lora_weights":
                     value = loras
+                elif field_name == "is_default":
+                    # YAML key "default" maps to model field "is_default"
+                    value = data.get("default", False)
                 else:
                     value = data.get(field_name)
 
@@ -289,6 +292,18 @@ class ModelLoader:
     def get_model_by_id(self, model_id: str) -> Optional[Model]:
         """Get a specific model by its ID."""
         return self._available_models.get(model_id)
+
+    def get_default_model(self, task: Optional[str] = None) -> Optional[Model]:
+        """Get the default model for a given task.
+
+        Returns the first model with ``is_default=True`` matching the task.
+        If *task* is None, returns the first default model regardless of task.
+        """
+        for model in self._available_models.values():
+            if model.is_default:
+                if task is None or model.task.value == task:
+                    return model
+        return None
 
     def reload_models(self) -> None:
         """Reload models from configuration file."""

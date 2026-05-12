@@ -319,6 +319,7 @@
   name: "Qwen3.6-27B"
   model: "Qwen3.6-27B"
   task: TextToText
+  default: true
   modified_at: "2026-04-22T15:59:03.844554+00:00"
   digest: 19a2f4733a863088bc06665bf307dca95f7d4370b4d8690340cdff9992fe48c6
   size: 35325163744

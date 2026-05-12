@@ -2,6 +2,7 @@
   name: "Qwen3.5-9B"
   model: "Qwen3.5-9B"
   task: TextToText
+  default: true
   modified_at: "2026-04-03T17:42:00.692848+00:00"
   digest: 8f0cb1e8e058e45c7d9676fcd4da2f08eb62ff537da747a6ffc7157c1f6a5684
   size: 771092736
