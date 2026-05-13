@@ -121,6 +121,10 @@ def _evict_for_vram(model):
 async def create_server(request: Request, body: CreateServerRequest):
     """Acquire or create a llama.cpp server for the given model.
 
+    Accepts an optional `num_ctx` parameter. If provided and exceeds the
+    model's configured context window, the request is rejected with HTTP 507
+    (`context_too_large`) before any server is started.
+
     Accepts priority information via:
     - Body field `priority` (1-10, lower = higher priority)
     - Header `X-Request-Priority` (high|medium|low) — overrides body
