@@ -46,13 +46,27 @@ async def _stream_upstream(client, method, url, headers, body, server_id):
         )
     except httpx.HTTPError as exc:
         # Upstream crashed, refused connection, or timed out before sending
-        # any response headers. Decrement use_count here because the caller's
-        # finally block skips it when is_streaming is True.
-        logger.error("Upstream server %s error before response: %s", server_id, exc)
+        # any response headers (e.g., OOM, segfault, killed by the kernel).
+        # Decrement use_count here because the caller's finally block skips
+        # it when is_streaming is True.
+        logger.error(
+            "Upstream server %s error before response: %s", server_id, exc
+        )
         await client.aclose()
         from app import server_cache
         server_cache.decrement_use(server_id)
         raise
+    except Exception as exc:
+        # Catch-all for connection errors, timeouts, or other transport failures
+        # before the response headers arrive.
+        logger.error(
+            "Upstream server %s failed before response: %s", server_id, exc
+        )
+        await client.aclose()
+        from app import server_cache
+        server_cache.decrement_use(server_id)
+        raise
+
     response_headers = dict(response.headers)
     status_code = response.status_code
     clean_headers = {
@@ -65,14 +79,34 @@ async def _stream_upstream(client, method, url, headers, body, server_id):
         try:
             async for chunk in response.aiter_bytes():
                 yield chunk
+        except httpx.RemoteProtocolError as exc:
+            # Incomplete chunked read: upstream closed mid-stream.
+            # This can happen due to OOM, context overflow, or network issues.
+            # We log the error but do NOT re-raise — letting the stream end
+            # gracefully avoids crashing the downstream response with a raw
+            # exception. The client receives whatever was streamed so far and
+            # the connection closes cleanly.
+            logger.error(
+                "Upstream server %s closed connection mid-stream: %s", server_id, exc
+            )
+        except Exception as exc:
+            # Other stream errors — same treatment: log and end stream.
+            logger.error(
+                "Upstream server %s stream error: %s", server_id, exc
+            )
         finally:
             # Close the upstream response (aborts connection if still open,
             # which signals llama.cpp to stop generating for this slot)
-            await response.aclose()
-            await client.aclose()
+            try:
+                await response.aclose()
+            except Exception:
+                pass
+            try:
+                await client.aclose()
+            except Exception:
+                pass
             # Request fully consumed (or client disconnected) — mark server idle
             from app import server_cache
-
             server_cache.decrement_use(server_id)
 
     return StreamingResponse(
@@ -261,6 +295,15 @@ async def proxy_request(request: Request, server_id: str, path: str):
         raise HTTPException(
             status_code=504,
             detail=f"Upstream server {server_id} timed out",
+        )
+    except Exception as exc:
+        # Catch-all for any other unexpected errors during proxying.
+        logger.error(
+            "Upstream server %s error: %s", server_id, exc
+        )
+        raise HTTPException(
+            status_code=503,
+            detail=f"Upstream server {server_id} failed: {exc}",
         )
     finally:
         # Decrement for non-streaming requests and errors.
