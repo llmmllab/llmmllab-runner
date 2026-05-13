@@ -22,7 +22,7 @@ from middleware.runner_metrics import (
 )
 from middleware.tracing import setup_tracing, shutdown_tracing
 from utils.hardware_manager import hardware_manager
-from utils.logging import llmmllogger
+from utils.logging import llmmllogger, set_session_id_ctx, reset_session_id_ctx
 
 logger = llmmllogger.bind(component="RunnerApp")
 
@@ -144,6 +144,25 @@ app.include_router(proxy_router.router)
 app.include_router(metrics_router.router)
 app.add_middleware(RequestIdMiddleware)
 app.add_middleware(PrometheusMiddleware)
+
+class SessionIdMiddleware:
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http":
+            from starlette.datastructures import Headers
+            headers = Headers(scope=scope)
+            session_id = headers.get("X-Session-ID")
+            token = set_session_id_ctx(session_id)
+            try:
+                await self.app(scope, receive, send)
+            finally:
+                reset_session_id_ctx(token)
+        else:
+            await self.app(scope, receive, send)
+
+app.add_middleware(SessionIdMiddleware)
 
 # Initialize distributed tracing
 setup_tracing("llmmllab-runner", app)
