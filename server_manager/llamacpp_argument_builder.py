@@ -177,8 +177,16 @@ class LlamaCppArgumentBuilder:
         # the REST API (/slots/{id}/save, /slots/{id}/restore) drives
         # the actual save/restore lifecycle at runtime.
         if SLOT_SAVE_DIR:
-            config["slot_save_path"] = SLOT_SAVE_DIR
-            logger.info(f"Slot persistence enabled: save_path={SLOT_SAVE_DIR}")
+            save_path = Path(SLOT_SAVE_DIR)
+            try:
+                save_path.mkdir(parents=True, exist_ok=True)
+            except OSError:
+                logger.warning(
+                    f"Could not create slot save directory {save_path}; "
+                    "ensure it exists before starting the server"
+                )
+            config["slot_save_path"] = str(save_path)
+            logger.info(f"Slot persistence enabled: save_path={save_path}")
             # --no-mmap: prevents OS from evicting mmap pages between
             # save and restore, which can corrupt the persisted slot.
             if SLOT_NO_MMAP:
