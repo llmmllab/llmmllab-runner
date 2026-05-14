@@ -55,7 +55,7 @@ Timers start when the last client releases a server (use_count drops to 0) and r
 |--------|---------|
 | `app.py` | FastAPI entry point, lifespan lifecycle, background eviction task |
 | `cache.py` | Thread-safe `ServerCache` with use-count tracking and eviction |
-| `proxy/router.py` | HTTP proxy with SSE streaming support and client disconnect handling |
+| `proxy/router.py` | HTTP proxy with SSE streaming support, client disconnect handling, and slot save/restore endpoints |
 | `routers/servers.py` | Server lifecycle: create, status, delete, release, force-evict |
 | `routers/models.py` | Model listing and statistics endpoints |
 | `server_manager/base.py` | Abstract process manager: spawn, health-check, graceful shutdown |
@@ -177,6 +177,24 @@ Returns GPU stats, active server count, and loaded models.
 |--------|------|-------------|
 | `*` | `/v1/server/{server_id}/{path}` | Forward any request to the upstream llama.cpp server |
 
+### Slot Persistence
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/v1/server/{server_id}/slots/{slot_id}/save` | Save KV cache slot to disk for session persistence |
+| `POST` | `/v1/server/{server_id}/slots/{slot_id}/restore` | Restore KV cache slot from disk for session resumption |
+
+Slot persistence eliminates redundant prefill computation by saving the conversation's KV cache to disk between sessions. When enabled (`SLOT_SAVE_DIR` is set), llama-server is launched with `--slot-save-path`, `--no-mmap`, and `--swa-full` flags.
+
+**Workflow:**
+
+1. Set `SLOT_SAVE_DIR=/data/slots` (or any writable directory)
+2. After a chat completion, call `POST /v1/server/{server_id}/slots/0/save` to persist the slot
+3. On the next session, call `POST /v1/server/{server_id}/slots/0/restore` before sending the next message
+4. The restored slot skips re-processing the full prompt history, reducing latency from seconds to milliseconds
+
+Each slot file is named by slot index and lives under `SLOT_SAVE_DIR`. File sizes range from ~1 GB to ~4.4 GB depending on context length.
+
 ### System
 
 | Method | Path | Description |
@@ -200,6 +218,9 @@ All configuration is environment-variable-driven via `.env`:
 | `SERVER_PORT_RANGE_END` | `8900` | End of dynamic port range |
 | `PROXY_TIMEOUT` | `600` | Upstream proxy timeout in seconds |
 | `GPU_POWER_CAP_PCT` | `85` | GPU power cap as % of default TDP (0 to disable) |
+| `SLOT_SAVE_DIR` | (empty) | Directory for persistent KV cache slots. When set, passes `--slot-save-path` to llama-server, enabling session state persistence via the slot save/restore API. See [Slot Persistence](#slot-persistence) below. |
+| `SLOT_NO_MMAP` | `true` | Pass `--no-mmap` when `SLOT_SAVE_DIR` is set. Prevents OS from evicting mmap pages between save/restore. |
+| `SLOT_SWA_FULL` | `true` | Pass `--swa-full` when `SLOT_SAVE_DIR` is set. Required for SWA models (e.g. Qwen 3.5) to correctly persist their KV cache. |
 
 ## Model Configuration
 

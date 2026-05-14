@@ -55,3 +55,31 @@ LLAMA_METRICS_INTERVAL_SEC = int(
 DCGM_METRICS_INTERVAL_SEC = int(
     os.environ.get("DCGM_METRICS_INTERVAL_SEC", "15")
 )
+
+# Persistent KV cache slot directory for session persistence.
+# When set, the runner passes --slot-save-path to llama-server so that
+# conversation state (KV cache) can be saved/restored via the llama.cpp
+# REST API (/slots/{id}/save, /slots/{id}/restore).  Each slot file is
+# named by slot index and lives under this directory.
+# Example: SLOT_SAVE_DIR=/data/slots  →  --slot-save-path /data/slots
+SLOT_SAVE_DIR = os.environ.get("SLOT_SAVE_DIR", "")
+
+# When SLOT_SAVE_DIR is set, also pass --no-mmap to llama-server.
+# Memory-mapped model loading can interfere with slot persistence
+# because the OS may evict mmap pages between save and restore.
+# Set to "false" to disable even when slot persistence is enabled.
+SLOT_NO_MMAP = os.environ.get("SLOT_NO_MMAP", "true").lower() in (
+    "true",
+    "1",
+    "yes",
+)
+
+# When SLOT_SAVE_DIR is set, also pass --swa-full to llama-server.
+# This is required for SWA (Sliding Window Attention) models such as
+# Qwen 3.5 to correctly persist and restore their KV cache.
+# Set to "false" to disable even when slot persistence is enabled.
+SLOT_SWA_FULL = os.environ.get("SLOT_SWA_FULL", "true").lower() in (
+    "true",
+    "1",
+    "yes",
+)

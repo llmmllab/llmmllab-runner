@@ -82,6 +82,78 @@ async def _stream_upstream(client, method, url, headers, body, server_id):
     )
 
 
+@router.post("/v1/server/{server_id}/slots/{slot_id}/save")
+async def save_slot(request: Request, server_id: str, slot_id: int):
+    """Save the KV cache slot to disk for session persistence.
+
+    Proxies to llama.cpp's /slots/{slot_id}/save endpoint.
+    The slot file is written to the directory configured by SLOT_SAVE_DIR.
+
+    Returns the llama.cpp save response (slot index, path, success status).
+    """
+    from app import server_cache
+
+    entry = server_cache.get(server_id)
+    if not entry:
+        raise HTTPException(status_code=404, detail=f"Server {server_id} not found")
+
+    target_host = f"http://127.0.0.1:{entry.port}"
+    upstream_url = f"{target_host}/slots/{slot_id}/save"
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        try:
+            response = await client.post(upstream_url)
+        except httpx.ConnectError:
+            raise HTTPException(
+                status_code=502,
+                detail=f"Upstream server {server_id} is unreachable",
+            )
+
+    return {
+        "status": "saved" if response.status_code == 200 else "failed",
+        "slot_id": slot_id,
+        "server_id": server_id,
+        "upstream_status": response.status_code,
+        "detail": response.text,
+    }
+
+
+@router.post("/v1/server/{server_id}/slots/{slot_id}/restore")
+async def restore_slot(request: Request, server_id: str, slot_id: int):
+    """Restore a KV cache slot from disk for session resumption.
+
+    Proxies to llama.cpp's /slots/{slot_id}/restore endpoint.
+    The slot file is read from the directory configured by SLOT_SAVE_DIR.
+
+    Returns the llama.cpp restore response (slot index, path, success status).
+    """
+    from app import server_cache
+
+    entry = server_cache.get(server_id)
+    if not entry:
+        raise HTTPException(status_code=404, detail=f"Server {server_id} not found")
+
+    target_host = f"http://127.0.0.1:{entry.port}"
+    upstream_url = f"{target_host}/slots/{slot_id}/restore"
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        try:
+            response = await client.post(upstream_url)
+        except httpx.ConnectError:
+            raise HTTPException(
+                status_code=502,
+                detail=f"Upstream server {server_id} is unreachable",
+            )
+
+    return {
+        "status": "restored" if response.status_code == 200 else "failed",
+        "slot_id": slot_id,
+        "server_id": server_id,
+        "upstream_status": response.status_code,
+        "detail": response.text,
+    }
+
+
 @router.api_route(
     "/v1/server/{server_id}/{path:path}",
     methods=["GET", "POST", "PUT", "DELETE", "PATCH"],
