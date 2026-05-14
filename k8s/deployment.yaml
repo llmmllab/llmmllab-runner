@@ -96,6 +96,8 @@ spec:
               value: "http://tempo.llmmllab.svc.cluster.local:4317"
             - name: DCGM_METRICS_ENABLED
               value: "true"
+            - name: SLOT_SAVE_DIR
+              value: "/slots"
         - name: dcgm-exporter
           image: nvcr.io/nvidia/k8s/dcgm-exporter:2.3.2-2.6.2-ubuntu20.04
           ports:
@@ -106,6 +108,13 @@ spec:
           volumeMounts:
             - name: dcgm-uvm
               mountPath: /usr/local/dcgm
+          resources:
+            requests:
+              memory: "500Mi"
+              cpu: "100m"
+            limits:
+              memory: "1Gi"
+              cpu: "200m"
   strategy:
     type: Recreate
 ---
@@ -212,6 +221,8 @@ spec:
               value: "90"
             - name: DCGM_METRICS_ENABLED
               value: "true"
+            - name: SLOT_SAVE_DIR
+              value: "/slots"
         - name: dcgm-exporter
           image: nvcr.io/nvidia/k8s/dcgm-exporter:2.3.2-2.6.2-ubuntu20.04
           ports:
@@ -222,5 +233,13 @@ spec:
           volumeMounts:
             - name: dcgm-uvm
               mountPath: /usr/local/dcgm
+          resources:
+            requests:
+              memory: "500Mi"
+              cpu: "100m"
+            limits:
+              memory: "1Gi"
+              cpu: "200m"
+
   strategy:
     type: Recreate
