@@ -203,21 +203,74 @@ Each slot file is named by slot index and lives under `SLOT_SAVE_DIR`. File size
 
 ## Configuration
 
-All configuration is environment-variable-driven via `.env`:
+All configuration is environment-variable-driven via `.env`. See `config.py` for defaults.
+
+### Core
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `LOG_LEVEL` | `WARNING` | Log level (DEBUG, INFO, WARNING, ERROR) |
-| `LLAMA_SERVER_EXECUTABLE` | `/llama.cpp/build/bin/llama-server` | Path to llama.cpp binary |
-| `MODELS_FILE_PATH` | (empty) | Path to `.models.yaml` — checked before `/app/.models.yaml` |
-| `CACHE_TIMEOUT_MIN` | `30` | Soft eviction timeout in minutes |
-| `EVICTION_TIMEOUT_MIN` | `60` | Hard eviction timeout in minutes |
+| `RUNNER_NAME` | `llmmllab-runner` | Service name (used for tracing identification) |
+| `LLAMA_SERVER_EXECUTABLE` | `/llama.cpp/build/bin/llama-server` | Path to the `llama-server` binary |
+| `MODELS_FILE_PATH` | *(empty)* | Path to `.models.yaml` — checked before `/app/.models.yaml` |
+
+### Server Lifecycle
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `CACHE_TIMEOUT_MIN` | `30` | Soft eviction timeout (minutes) — server becomes *eligible* for eviction when VRAM pressure occurs |
+| `EVICTION_TIMEOUT_MIN` | `60` | Hard eviction timeout (minutes) — server is *forcibly* stopped regardless of VRAM state |
+| `SERVER_START_OOM_RETRIES` | `2` | Max retries when a server start fails due to OOM (set `0` to disable) |
+
+### Network
+
+| Variable | Default | Description |
+|----------|---------|-------------|
 | `RUNNER_PORT` | `8000` | Port the runner listens on |
 | `RUNNER_HOST` | `0.0.0.0` | Bind address |
 | `SERVER_PORT_RANGE_START` | `8001` | Start of dynamic port range for llama.cpp instances |
 | `SERVER_PORT_RANGE_END` | `8900` | End of dynamic port range |
-| `PROXY_TIMEOUT` | `600` | Upstream proxy timeout in seconds |
-| `GPU_POWER_CAP_PCT` | `85` | GPU power cap as % of default TDP (0 to disable) |
+| `PROXY_TIMEOUT` | `600` | Upstream proxy timeout (seconds) — must exceed longest expected inference time |
+
+### GPU & Hardware
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `GPU_POWER_CAP_PCT` | `85` | GPU power cap as % of default TDP (`0` to disable) |
+| `DCGM_METRICS_ENABLED` | `true` | Enable DCGM exporter metrics scraping (`true`/`false`) |
+| `DCGM_EXPORTER_URL` | `http://localhost:9400/metrics` | DCGM exporter metrics endpoint |
+| `DCGM_METRICS_INTERVAL_SEC` | `15` | DCGM metrics scrape interval (seconds) |
+| `LLAMA_METRICS_INTERVAL_SEC` | `15` | Llama.cpp server metrics scraping interval (seconds) |
+
+### Task Queue
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `QUEUE_AGING_LOW_TO_MEDIUM_SEC` | `60` | Seconds before a queued task ages from low to medium priority |
+| `QUEUE_AGING_MEDIUM_TO_HIGH_SEC` | `120` | Seconds before a queued task ages from medium to high priority |
+
+### Logging & Observability
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `LOG_LEVEL` | `WARNING` | Log level (`DEBUG`, `INFO`, `WARNING`, `ERROR`) |
+| `LOG_FORMAT` | `console` | Log format (`console` for human-readable, `json` for structured) |
+| `FORCE_COLOR` | `0` | Force colored output even without TTY (`1` to enable) |
+| `TEMPO_ENDPOINT` | `http://tempo.llmmllab.svc.cluster.local:4317` | Jaeger/Tempo OTLP endpoint for distributed tracing |
+
+### Runtime (GPU / Allocator)
+
+These are set in the Kubernetes deployment and affect the underlying runtime:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `CUDA_VISIBLE_DEVICES` | *(unset)* | GPU device IDs visible to the process |
+| `CUDA_DEVICE_ORDER` | `PCI_BUS_ID` | CUDA device ordering |
+| `CUDA_LAUNCH_BLOCKING` | `0` | Synchronous CUDA error checking (`1` for debugging) |
+| `NVIDIA_VISIBLE_DEVICES` | `all` | NVIDIA container runtime device visibility |
+| `NVIDIA_DRIVER_CAPABILITIES` | `compute,utility,video` | NVIDIA driver capabilities |
+| `PYTHONMALLOC` | `malloc` | Python memory allocator |
+| `MALLOC_ARENA_MAX` | `2` | glibc malloc arena limit (reduces memory fragmentation) |
+| `GGML_LOG_LEVEL` | `2` | GGML (llama.cpp backend) log verbosity |
 | `SLOT_SAVE_DIR` | (empty) | Directory for persistent KV cache slots. When set, passes `--slot-save-path` to llama-server, enabling session state persistence via the slot save/restore API. See [Slot Persistence](#slot-persistence) below. |
 | `SLOT_NO_MMAP` | `true` | Pass `--no-mmap` when `SLOT_SAVE_DIR` is set. Prevents OS from evicting mmap pages between save/restore. |
 | `SLOT_SWA_FULL` | `true` | Pass `--swa-full` when `SLOT_SAVE_DIR` is set. Required for SWA models (e.g. Qwen 3.5) to correctly persist their KV cache. |
