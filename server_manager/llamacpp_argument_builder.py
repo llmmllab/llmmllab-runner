@@ -11,7 +11,13 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from models import Model, ModelParameters
-from config import LLAMA_SERVER_EXECUTABLE, LOG_LEVEL
+from config import (
+    LLAMA_SERVER_EXECUTABLE,
+    LOG_LEVEL,
+    SLOT_SAVE_DIR,
+    SLOT_NO_MMAP,
+    SLOT_SWA_FULL,
+)
 from utils.logging import llmmllogger
 
 logger = llmmllogger.bind(component="LlamaCppArgumentBuilder")
@@ -165,6 +171,24 @@ class LlamaCppArgumentBuilder:
             config["fit_ctx"] = fit_ctx
         else:
             config["fit"] = "off"
+
+        # Persistent KV cache slot save/restore for session persistence.
+        # llama-server writes slot state to disk under this directory;
+        # the REST API (/slots/{id}/save, /slots/{id}/restore) drives
+        # the actual save/restore lifecycle at runtime.
+        if SLOT_SAVE_DIR:
+            config["slot_save_path"] = SLOT_SAVE_DIR
+            logger.info(f"Slot persistence enabled: save_path={SLOT_SAVE_DIR}")
+            # --no-mmap: prevents OS from evicting mmap pages between
+            # save and restore, which can corrupt the persisted slot.
+            if SLOT_NO_MMAP:
+                config["no_mmap"] = True
+                logger.info("Slot persistence: --no-mmap enabled")
+            # --swa-full: required for SWA models (e.g. Qwen 3.5) to
+            # correctly persist their sliding-window KV cache.
+            if SLOT_SWA_FULL:
+                config["swa_full"] = True
+                logger.info("Slot persistence: --swa-full enabled")
 
         if LOG_LEVEL.lower() == "trace":
             config["verbose"] = True
