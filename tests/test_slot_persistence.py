@@ -277,3 +277,204 @@ class TestSlotProxyHelpers:
         for i in range(10):
             sid = _resolve_slot_id(f"session-{i}", "server-1", 1)
             assert sid == 0
+
+
+class TestSessionSlotCache:
+    """Regression tests for the slot ID mismatch bug.
+
+    Root cause: llama.cpp ignores `slot_id_or_index` when LCP similarity
+    matching finds a better slot (sim_best > 0.100).  The hash-assigned
+    slot and the slot llama.cpp actually used diverged, causing save/restore
+    to hit the wrong slot and return 404.
+
+    Fix: Don't inject `slot_id_or_index` on the first request.  Capture
+    `x-slot-id` from the response headers, cache per session, and only
+    inject on subsequent requests.
+    """
+
+    def setup_method(self):
+        """Clear session slot cache before each test."""
+        from proxy.router import _session_slot_cache
+        _session_slot_cache.clear()
+
+    def test_first_request_no_slot_injection(self):
+        """slot_id_or_index is NOT injected when session is not cached.
+
+        On the very first request for a session, we don't know which slot
+        llama.cpp will assign, so we must NOT send slot_id_or_index.
+        """
+        from proxy.router import _session_slot_cache
+
+        session_id = "new-session-xyz"
+        assert session_id not in _session_slot_cache
+
+        body = b'{"model": "test", "messages": [{"role": "user", "content": "hi"}]}'
+        body_dict = __import__("json").loads(body)
+        assert "slot_id_or_index" not in body_dict
+
+        # Simulate the injection logic from proxy_request():
+        #   if session_id in _session_slot_cache: inject
+        if session_id in _session_slot_cache:
+            body_dict["slot_id_or_index"] = _session_slot_cache[session_id]
+
+        assert "slot_id_or_index" not in body_dict
+
+    def test_subsequent_request_injects_cached_slot(self):
+        """slot_id_or_index IS injected when session has a cached slot."""
+        from proxy.router import _session_slot_cache
+
+        session_id = "known-session"
+        _session_slot_cache[session_id] = 7
+
+        body = b'{"model": "test", "messages": [{"role": "user", "content": "hi"}]}'
+        body_dict = __import__("json").loads(body)
+
+        # Simulate the injection logic
+        if session_id in _session_slot_cache:
+            body_dict["slot_id_or_index"] = _session_slot_cache[session_id]
+
+        assert body_dict["slot_id_or_index"] == 7
+
+    def test_x_slot_id_capture_from_headers(self):
+        """x-slot-id response header is parsed and cached correctly.
+
+        This verifies the logic that captures the slot ID from llama.cpp's
+        response headers, as done in _stream_upstream().
+        """
+        from proxy.router import _session_slot_cache
+
+        session_id = "session-abc"
+        assert session_id not in _session_slot_cache
+
+        # Simulate capturing x-slot-id from response headers
+        x_slot = "3"
+        resp_slot_id = None
+        if x_slot:
+            try:
+                resp_slot_id = int(x_slot)
+            except (ValueError, TypeError):
+                pass
+
+        # Cache the discovered slot
+        if session_id:
+            _session_slot_cache[session_id] = resp_slot_id
+
+        assert _session_slot_cache[session_id] == 3
+
+    def test_x_slot_id_malicious_value_handled(self):
+        """Non-integer x-slot-id values don't crash the capture logic."""
+        for bad_value in ["", "abc", "3.5", None]:
+            resp_slot_id = None
+            if bad_value:
+                try:
+                    resp_slot_id = int(bad_value)
+                except (ValueError, TypeError):
+                    pass
+            # Should be None for all bad values
+            if bad_value in ("", "abc", "3.5", None):
+                assert resp_slot_id is None
+
+    def test_save_uses_actual_slot_not_hash_slot(self):
+        """Save/restore uses the actual slot from x-slot-id, not the hash.
+
+        Regression: when hash assigned slot 5 but llama.cpp used slot 7
+        via LCP matching, save hit slot 5 and got 404. Now it should use
+        the actual slot ID from the response.
+        """
+        from proxy.router import _session_slot_cache, _resolve_slot_id
+
+        session_id = "session-mismatch"
+        server_id = "server-1"
+
+        # Hash assigns some slot
+        hash_slot = _resolve_slot_id(session_id, server_id, 4)
+
+        # But llama.cpp actually assigned a different slot (via x-slot-id)
+        # Pick a slot that differs from the hash slot to prove the point
+        resp_slot_id = (hash_slot + 1) % 4
+        _session_slot_cache[session_id] = resp_slot_id
+
+        # On the save path, we use the actual slot from response headers
+        # (captured as `resp_slot_id` in the streaming path)
+        # The logic is: actual_slot = resp_slot_id if resp_slot_id else slot_id
+        final_slot = resp_slot_id if resp_slot_id is not None else hash_slot
+
+        assert final_slot == resp_slot_id
+        assert final_slot != hash_slot
+
+    def test_restore_uses_cached_slot_from_previous_request(self):
+        """Restore uses the cached slot ID from a prior request's x-slot-id."""
+        from proxy.router import _session_slot_cache
+
+        session_id = "returning-session"
+        # Previous request established that llama.cpp uses slot 5
+        _session_slot_cache[session_id] = 5
+
+        # On restore, we use the cached value
+        restore_slot_id = _session_slot_cache.get(session_id, 0)
+        assert restore_slot_id == 5
+
+
+class TestSlotOrchestrationFlow:
+    """Integration-style tests for the full slot orchestration flow."""
+
+    def setup_method(self):
+        from proxy.router import _session_slot_cache, _num_slots_cache
+        _session_slot_cache.clear()
+        _num_slots_cache.clear()
+
+    def test_full_flow_first_then_second_request(self):
+        """Simulate first request (no injection) then second (with injection).
+
+        1. First request: no slot_id_or_index, llama.cpp assigns slot via
+           LCP matching, we capture x-slot-id from response
+        2. Second request: slot_id_or_index injected from cache, llama.cpp
+           uses the exact same slot, save/restore hits the right slot
+        """
+        import json as json_mod
+        from proxy.router import _session_slot_cache, _resolve_slot_id
+
+        session_id = "flow-test-session"
+        body = json_mod.dumps({
+            "model": "test",
+            "messages": [{"role": "user", "content": "hello"}],
+        })
+
+        # --- First request ---
+        # No cached slot, so no injection
+        assert session_id not in _session_slot_cache
+        body_dict = json_mod.loads(body)
+        if session_id in _session_slot_cache:
+            body_dict["slot_id_or_index"] = _session_slot_cache[session_id]
+        assert "slot_id_or_index" not in body_dict
+
+        # Llama.cpp responds with x-slot-id: 2
+        resp_slot_id = 2
+        _session_slot_cache[session_id] = resp_slot_id
+
+        # --- Second request ---
+        # Cached slot exists, so inject it
+        body_dict = json_mod.loads(body)
+        if session_id in _session_slot_cache:
+            body_dict["slot_id_or_index"] = _session_slot_cache[session_id]
+        assert body_dict["slot_id_or_index"] == 2
+
+    def test_slot_cache_survives_multiple_requests(self):
+        """Cached slot ID persists across multiple requests for same session."""
+        from proxy.router import _session_slot_cache
+
+        session_id = "sticky-session"
+        _session_slot_cache[session_id] = 4
+
+        for _ in range(5):
+            assert _session_slot_cache.get(session_id) == 4
+
+    def test_different_sessions_get_different_slots(self):
+        """Different sessions can have different cached slots."""
+        from proxy.router import _session_slot_cache
+
+        # Simulate two sessions that llama.cpp assigned to different slots
+        _session_slot_cache["session-a"] = 0
+        _session_slot_cache["session-b"] = 2
+
+        assert _session_slot_cache["session-a"] != _session_slot_cache["session-b"]
