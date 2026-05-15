@@ -26,12 +26,15 @@ class BaseServerManager(ABC):
     def __init__(
         self,
         model: Model,
+        session_id: Optional[str] = None,
         port: Optional[int] = None,
         startup_timeout: int = 30,
     ):
         self.model = model
         self._logger = llmmllogger.bind(
-            component=self.__class__.__name__, model=model.name
+            component=self.__class__.__name__,
+            model=model.name,
+            session=session_id or "N/A",
         )
         self.process: Optional[subprocess.Popen] = None
         self.port: int = port or self._find_available_port()
@@ -185,7 +188,7 @@ class BaseServerManager(ABC):
         """
         import re
 
-        ctx_match = re.search(r'--ctx-size\s+(\d+)', ' '.join(original_args))
+        ctx_match = re.search(r"--ctx-size\s+(\d+)", " ".join(original_args))
         if not ctx_match:
             self._logger.warning(
                 "Cannot reduce context: --ctx-size not found in server args"
@@ -200,19 +203,20 @@ class BaseServerManager(ABC):
 
         minimum_ctx = self._get_minimum_ctx()
         for attempt in range(1, 4):
-            reduced_ctx = int(original_ctx * (0.5 ** attempt))
-            reduced_ctx = max(reduced_ctx, minimum_ctx)  # Respect model-configured minimum
+            reduced_ctx = int(original_ctx * (0.5**attempt))
+            reduced_ctx = max(
+                reduced_ctx, minimum_ctx
+            )  # Respect model-configured minimum
 
             retry_args = [
-                a if not a.startswith('--ctx-size')
-                else f'--ctx-size {reduced_ctx}'
+                a if not a.startswith("--ctx-size") else f"--ctx-size {reduced_ctx}"
                 for a in original_args
             ]
             # Also replace the value after --ctx-size
             retry_args = []
             for i, a in enumerate(original_args):
-                if a == '--ctx-size' and i + 1 < len(original_args):
-                    retry_args.append('--ctx-size')
+                if a == "--ctx-size" and i + 1 < len(original_args):
+                    retry_args.append("--ctx-size")
                     retry_args.append(str(reduced_ctx))
                 else:
                     retry_args.append(a)
@@ -308,9 +312,7 @@ class BaseServerManager(ABC):
         how far llama.cpp is allowed to auto-reduce the context window.
         Falls back to 2048 as an absolute floor.
         """
-        configured_ctx = (
-            getattr(self.model.parameters, "num_ctx", None) or 90000
-        )
+        configured_ctx = getattr(self.model.parameters, "num_ctx", None) or 90000
         reduction_limit = (
             getattr(self.model.parameters, "ctx_size_reduction_limit", None)
             if self.model.parameters
@@ -343,8 +345,7 @@ class BaseServerManager(ABC):
                     )
                     if actual_ctx is not None:
                         configured_ctx = (
-                            getattr(self.model.parameters, "num_ctx", None)
-                            or 90000
+                            getattr(self.model.parameters, "num_ctx", None) or 90000
                         )
                         actual_ctx = int(actual_ctx)
                         minimum_ctx = self._get_minimum_ctx()

@@ -15,11 +15,13 @@ class LlamaCppServerManager(BaseServerManager):
     def __init__(
         self,
         model: Model,
+        session_id: Optional[str] = None,
         port: Optional[int] = None,
         is_embedding: bool = False,
     ):
         super().__init__(
             model=model,
+            session_id=session_id,
             port=port,
             startup_timeout=120,
         )

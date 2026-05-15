@@ -7,13 +7,17 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 from config import RUNNER_PORT, SERVER_START_OOM_RETRIES
-from task_queue import Priority, RequestSource, parse_priority_header, parse_source_header
+from task_queue import (
+    Priority,
+    RequestSource,
+    parse_priority_header,
+    parse_source_header,
+)
 from server_manager import LlamaCppServerManager
 from utils.hardware_manager import hardware_manager
-from utils.logging import llmmllogger
+from utils.logging import llmmllogger, _session_id_ctx
 from utils.model_loader import ModelLoader
 from middleware.runner_metrics import record_server_start
-
 
 # Error reason codes for structured error responses
 MODEL_NOT_CONFIGURED = "model_not_configured"
@@ -134,9 +138,7 @@ async def create_server(request: Request, body: CreateServerRequest):
     from app import server_cache, request_queue
 
     # Determine priority from headers (override body) or fall back to body value
-    header_priority = parse_priority_header(
-        request.headers.get("x-request-priority")
-    )
+    header_priority = parse_priority_header(request.headers.get("x-request-priority"))
     source = parse_source_header(request.headers.get("x-request-source"))
 
     # Use header priority if explicitly set, otherwise map body integer
@@ -265,8 +267,11 @@ async def create_server(request: Request, body: CreateServerRequest):
     # Evict idle servers if needed for VRAM
     _evict_for_vram(model)
 
+    session_id = _session_id_ctx.get() or request.headers.get("x-session-id")
+
     manager = LlamaCppServerManager(
         model=model,
+        session_id=session_id,
     )
 
     # Register as "starting" BEFORE starting the process to prevent duplicates
@@ -298,7 +303,9 @@ async def create_server(request: Request, body: CreateServerRequest):
             break
 
         backoff = 2 ** (attempt + 1)  # 4s, 8s
-        reason = "OOM" if exit_code == -9 else "segfault" if exit_code == -11 else "signal"
+        reason = (
+            "OOM" if exit_code == -9 else "segfault" if exit_code == -11 else "signal"
+        )
         logger.warning(
             f"{reason} detected on server start for model {model.id}, "
             f"retrying in {backoff}s (attempt {attempt + 1}/{max_retries})"
@@ -336,7 +343,8 @@ async def create_server(request: Request, body: CreateServerRequest):
         else:
             detail = _build_error_response(
                 reason=SERVER_START_FAILED,
-                message=last_error or f"Failed to start llama.cpp server for model '{model.id}'",
+                message=last_error
+                or f"Failed to start llama.cpp server for model '{model.id}'",
                 requested_model=model.id,
                 details={"exit_code": exit_code} if exit_code is not None else {},
             )
