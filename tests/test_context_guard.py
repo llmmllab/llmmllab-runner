@@ -57,14 +57,11 @@ class TestContextTooLargeGuard:
     num_ctx exceeds the model's configured context window."""
 
     @patch("routers.servers.model_loader")
-    @patch("app.request_queue")
     def test_rejects_when_requested_exceeds_model_ctx(
-        self, mock_queue, mock_loader
+        self, mock_loader
     ):
         """507 when request num_ctx > model parameters.num_ctx."""
         mock_loader.get_model_by_id.return_value = _make_model(ctx=32000)
-        mock_queue.size.return_value = asyncio.Future()
-        mock_queue.size.return_value.set_result(0)
 
         from fastapi import HTTPException
         from routers.servers import create_server
@@ -85,14 +82,11 @@ class TestContextTooLargeGuard:
 
     @patch("routers.servers.model_loader")
     @patch("app.server_cache")
-    @patch("app.request_queue")
     def test_allows_when_requested_within_model_ctx(
-        self, mock_queue, mock_cache, mock_loader
+        self, mock_cache, mock_loader
     ):
         """No rejection when request num_ctx <= model parameters.num_ctx."""
         mock_loader.get_model_by_id.return_value = _make_model(ctx=64000)
-        mock_queue.size.return_value = asyncio.Future()
-        mock_queue.size.return_value.set_result(0)
         mock_cache.acquire_by_model.return_value = _make_entry()
         mock_cache.has_starting_server.return_value = False
 
@@ -106,14 +100,11 @@ class TestContextTooLargeGuard:
 
     @patch("routers.servers.model_loader")
     @patch("app.server_cache")
-    @patch("app.request_queue")
     def test_allows_when_num_ctx_not_provided(
-        self, mock_queue, mock_cache, mock_loader
+        self, mock_cache, mock_loader
     ):
         """No rejection when request omits num_ctx (None)."""
         mock_loader.get_model_by_id.return_value = _make_model(ctx=32000)
-        mock_queue.size.return_value = asyncio.Future()
-        mock_queue.size.return_value.set_result(0)
         mock_cache.acquire_by_model.return_value = _make_entry()
         mock_cache.has_starting_server.return_value = False
 
@@ -126,14 +117,11 @@ class TestContextTooLargeGuard:
         assert result["server_id"] == "srv-1"
 
     @patch("routers.servers.model_loader")
-    @patch("app.request_queue")
     def test_uses_default_90000_when_model_has_no_parameters(
-        self, mock_queue, mock_loader
+        self, mock_loader
     ):
         """When model.parameters is None, default to 90000."""
         mock_loader.get_model_by_id.return_value = _make_model(params_none=True)
-        mock_queue.size.return_value = asyncio.Future()
-        mock_queue.size.return_value.set_result(0)
 
         from fastapi import HTTPException
         from routers.servers import create_server
@@ -151,14 +139,11 @@ class TestContextTooLargeGuard:
 
     @patch("routers.servers.model_loader")
     @patch("app.server_cache")
-    @patch("app.request_queue")
     def test_allows_equal_context_size(
-        self, mock_queue, mock_cache, mock_loader
+        self, mock_cache, mock_loader
     ):
         """No rejection when request num_ctx == model parameters.num_ctx."""
         mock_loader.get_model_by_id.return_value = _make_model(ctx=32000)
-        mock_queue.size.return_value = asyncio.Future()
-        mock_queue.size.return_value.set_result(0)
         mock_cache.acquire_by_model.return_value = _make_entry()
         mock_cache.has_starting_server.return_value = False
 

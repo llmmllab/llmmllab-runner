@@ -7,12 +7,6 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 from config import RUNNER_PORT, SERVER_START_OOM_RETRIES
-from task_queue import (
-    Priority,
-    RequestSource,
-    parse_priority_header,
-    parse_source_header,
-)
 from server_manager import LlamaCppServerManager
 from utils.hardware_manager import hardware_manager
 from utils.logging import llmmllogger, _session_id_ctx
@@ -70,22 +64,7 @@ def _get_available_model_ids() -> List[str]:
 
 class CreateServerRequest(BaseModel):
     model_id: str
-    priority: int = 10
     num_ctx: Optional[int] = None
-
-
-def _int_to_priority(value: int) -> Priority:
-    """Map legacy integer priority (1-10) to Priority enum.
-
-    Lower integer = higher priority (1 is highest, 10 is lowest).
-    1-3 → HIGH, 4-7 → MEDIUM, 8-10 → LOW
-    """
-    if value <= 3:
-        return Priority.HIGH
-    elif value <= 7:
-        return Priority.MEDIUM
-    else:
-        return Priority.LOW
 
 
 def _estimate_model_size(model) -> float:
@@ -125,58 +104,14 @@ def _evict_for_vram(model):
 async def create_server(request: Request, body: CreateServerRequest):
     """Acquire or create a llama.cpp server for the given model.
 
-    Accepts priority information via:
-    - Body field `priority` (1-10, lower = higher priority)
-    - Header `X-Request-Priority` (high|medium|low) — overrides body
-    - Header `X-Request-Source` (user|scheduled|system)
-
     Reuses an existing healthy server for the model if available.
     If a server is already starting for this model, polls until ready.
     Creates a new one only if none exists and none is starting.
     Returns server_id and base_url for proxying requests.
     """
-    from app import server_cache, request_queue
+    from app import server_cache
 
-    # Determine priority from headers (override body) or fall back to body value
-    header_priority = parse_priority_header(request.headers.get("x-request-priority"))
-    source = parse_source_header(request.headers.get("x-request-source"))
-
-    # Use header priority if explicitly set, otherwise map body integer
-    if request.headers.get("x-request-priority"):
-        priority = header_priority
-    else:
-        priority = _int_to_priority(body.priority)
-
-    logger.info(
-        f"Server create request for model {body.model_id}: "
-        f"priority={priority.name}, source={source.value}"
-    )
-
-    # If there's a queue and items ahead of us, wait our turn
-    queue_size = await request_queue.size()
-    if queue_size > 0:
-        logger.info(
-            f"Queue has {queue_size} items ahead, enqueuing request "
-            f"for model {body.model_id} at priority {priority.name}"
-        )
-        future = await request_queue.enqueue(
-            request=body,
-            priority=priority,
-            source=source,
-        )
-        try:
-            await asyncio.wait_for(future, timeout=120)
-        except asyncio.TimeoutError:
-            await request_queue.cancel(future)
-            raise HTTPException(
-                status_code=503,
-                detail="Request timed out waiting in priority queue",
-            )
-        except asyncio.CancelledError:
-            raise HTTPException(
-                status_code=503,
-                detail="Request was cancelled in priority queue",
-            )
+    logger.info(f"Server create request for model {body.model_id}")
 
     model = model_loader.get_model_by_id(body.model_id)
     if not model:
