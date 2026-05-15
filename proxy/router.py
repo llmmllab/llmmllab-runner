@@ -163,6 +163,7 @@ async def _stream_upstream(
             async for chunk in response.aiter_bytes():
                 yield chunk
         finally:
+            logger.info("Stream ended, cleaning up", slot_file=slot_file, target_host=target_host)
             # Close the upstream response (aborts connection if still open,
             # which signals llama.cpp to stop generating for this slot)
             await response.aclose()
