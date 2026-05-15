@@ -37,7 +37,7 @@
     think: False
     kv_on_cpu: True
     parallel: 4
-    # n_cpu_moe: 10
+    is_default: True
   pipeline: llama
   lora_weights: []
   provider: llama_cpp

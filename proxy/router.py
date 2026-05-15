@@ -6,23 +6,102 @@ and forwards to the appropriate local llama.cpp server instance.
 Tracks server activity: increments use_count on request start, decrements
 when the response fully completes. This allows the cache eviction timer to
 fire based on actual request activity rather than external release calls.
+
+For chat completion requests with a session_id, automatically restores the
+KV cache slot before forwarding and saves it after the response drains,
+enabling persistent conversation state across requests.
 """
 
+import hashlib
 import json
+import os
+from typing import Dict
 
 import httpx
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import Response, StreamingResponse
 
-from config import PROXY_TIMEOUT
-from utils.logging import llmmllogger
+from config import PROXY_TIMEOUT, SLOT_SAVE_DIR
+from utils.logging import llmmllogger, _session_id_ctx
 
 logger = llmmllogger.bind(component="proxy_router")
 
 router = APIRouter()
 
+# server_id -> number of slots (discovered from upstream /slots endpoint)
+_num_slots_cache: Dict[str, int] = {}
 
-async def _stream_upstream(client, method, url, headers, body, server_id):
+
+def _slot_file_path(session_id: str) -> str:
+    """Build the absolute path for a session's slot cache file."""
+    return f"{SLOT_SAVE_DIR}/slot_{session_id}.bin"
+
+
+def _resolve_slot_id(session_id: str, server_id: str, num_slots: int) -> int:
+    """Map a session_id to a slot index via hash.
+
+    Ensures the same session always uses the same slot across requests.
+    """
+    return int(hashlib.md5(session_id.encode()).hexdigest(), 16) % num_slots
+
+
+async def _restore_slot(target_host: str, slot_id: int, slot_file: str) -> None:
+    """Restore a KV cache slot from disk before a chat completion.
+
+    Silently skips if the slot file doesn't exist (first request for session).
+    """
+    if not os.path.exists(slot_file):
+        return
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            await client.post(
+                f"{target_host}/slots/{slot_id}/restore",
+                json={"filename": slot_file},
+            )
+    except Exception as e:
+        logger.warning(f"Slot restore failed for {slot_file}: {e}")
+
+
+async def _save_slot(target_host: str, slot_id: int, slot_file: str) -> None:
+    """Save the KV cache slot to disk after a chat completion."""
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            await client.post(
+                f"{target_host}/slots/{slot_id}/save",
+                json={"filename": slot_file},
+            )
+    except Exception as e:
+        logger.warning(f"Slot save failed for {slot_file}: {e}")
+
+
+async def _discover_num_slots(target_host: str, server_id: str) -> int:
+    """Query upstream /slots to discover the number of available slots."""
+    if server_id in _num_slots_cache:
+        return _num_slots_cache[server_id]
+    try:
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            resp = await client.get(f"{target_host}/slots")
+            if resp.status_code == 200:
+                slots = resp.json()
+                num = len(slots) if slots else 1
+                _num_slots_cache[server_id] = num
+                # Bounce oldest entries to prevent memory leak from evicted servers
+                if len(_num_slots_cache) > 100:
+                    _num_slots_cache.pop(next(iter(_num_slots_cache)))
+                return num
+    except Exception:
+        pass
+    # Fallback
+    _num_slots_cache[server_id] = 1
+    return 1
+
+
+async def _stream_upstream(
+    client, method, url, headers, body, server_id,
+    target_host: str = "",
+    slot_id: int = 0,
+    slot_file: str = "",
+):
     """Stream response from upstream, keeping client open for the entire duration.
 
     Returns a StreamingResponse that maintains the upstream connection
@@ -32,6 +111,8 @@ async def _stream_upstream(client, method, url, headers, body, server_id):
     When the downstream client disconnects mid-stream, ``aclose()`` is
     called on the upstream response which closes the TCP connection to
     llama.cpp, causing it to stop generating tokens for the abandoned slot.
+
+    If slot_file is provided, saves the KV cache slot after the stream drains.
     """
 
     try:
@@ -70,6 +151,9 @@ async def _stream_upstream(client, method, url, headers, body, server_id):
             # which signals llama.cpp to stop generating for this slot)
             await response.aclose()
             await client.aclose()
+            # Save KV cache slot before marking server idle
+            if slot_file and target_host:
+                await _save_slot(target_host, slot_id, slot_file)
             # Request fully consumed (or client disconnected) — mark server idle
             from app import server_cache
 
@@ -100,9 +184,14 @@ async def save_slot(request: Request, server_id: str, slot_id: int):
     target_host = f"http://127.0.0.1:{entry.port}"
     upstream_url = f"{target_host}/slots/{slot_id}/save"
 
+    body = await request.body()
     async with httpx.AsyncClient(timeout=30.0) as client:
         try:
-            response = await client.post(upstream_url)
+            response = await client.post(
+                upstream_url,
+                content=body,
+                headers={"Content-Type": "application/json"},
+            )
         except httpx.ConnectError:
             raise HTTPException(
                 status_code=502,
@@ -136,9 +225,14 @@ async def restore_slot(request: Request, server_id: str, slot_id: int):
     target_host = f"http://127.0.0.1:{entry.port}"
     upstream_url = f"{target_host}/slots/{slot_id}/restore"
 
+    body = await request.body()
     async with httpx.AsyncClient(timeout=30.0) as client:
         try:
-            response = await client.post(upstream_url)
+            response = await client.post(
+                upstream_url,
+                content=body,
+                headers={"Content-Type": "application/json"},
+            )
         except httpx.ConnectError:
             raise HTTPException(
                 status_code=502,
@@ -166,6 +260,9 @@ async def proxy_request(request: Request, server_id: str, path: str):
       /v1/server/{id}/health               ->  http://127.0.0.1:{port}/health
 
     SSE responses are streamed without buffering.
+
+    For chat completions with a session_id, restores the KV cache slot
+    before forwarding and saves it after the response drains.
     """
     from app import server_cache
 
@@ -175,6 +272,18 @@ async def proxy_request(request: Request, server_id: str, path: str):
 
     target_host = f"http://127.0.0.1:{entry.port}"
 
+    # Resolve session_id for slot persistence
+    session_id = _session_id_ctx.get() or request.headers.get("x-session-id")
+    is_chat_completion = "chat/completions" in path
+
+    # Slot persistence state (only for chat completions with session_id)
+    slot_id = 0
+    slot_file = ""
+    if SLOT_SAVE_DIR and session_id and is_chat_completion:
+        num_slots = await _discover_num_slots(target_host, server_id)
+        slot_id = _resolve_slot_id(session_id, server_id, num_slots)
+        slot_file = _slot_file_path(session_id)
+
     # Reject chat completion requests when all slots are busy to prevent
     # request queueing that causes cascading timeouts with --parallel 1.
     # Include a Retry-After header so callers can back off instead of
@@ -183,7 +292,7 @@ async def proxy_request(request: Request, server_id: str, path: str):
     # all slots report as busy — a freshly restarted server may show stale
     # slot state, so we skip the check if /health fails.
     remaining = path
-    if "chat/completions" in remaining:
+    if is_chat_completion:
         try:
             async with httpx.AsyncClient(timeout=2.0) as check_client:
                 # Verify the server is actually responsive first
@@ -237,9 +346,14 @@ async def proxy_request(request: Request, server_id: str, path: str):
         except Exception:
             pass  # If /health or /slots check fails, proceed normally
 
+    # Restore KV cache slot before chat completion
+    if slot_file:
+        await _restore_slot(target_host, slot_id, slot_file)
+
     # Mark server as in-use during request
     server_cache.increment_use(server_id)
     is_streaming = False
+    slot_saved = False
 
     try:
         # Rewrite path: strip the /v1/server/{id} prefix
@@ -270,7 +384,7 @@ async def proxy_request(request: Request, server_id: str, path: str):
         client = httpx.AsyncClient(timeout=PROXY_TIMEOUT)
 
         # Check if this is likely an SSE request (POST to /v1/chat/completions)
-        is_likely_sse = method == "POST" and "/chat/completions" in remaining and body
+        is_likely_sse = method == "POST" and is_chat_completion and body
 
         if is_likely_sse:
             try:
@@ -280,7 +394,8 @@ async def proxy_request(request: Request, server_id: str, path: str):
                 is_likely_sse = True  # be safe, stream if we can't parse
 
         if is_likely_sse:
-            # Streaming: decrement happens in upstream_iterator's finally block
+            # Streaming: decrement and slot save happen in upstream_iterator's
+            # finally block when the stream drains or client disconnects.
             is_streaming = True
             return await _stream_upstream(
                 client,
@@ -289,6 +404,9 @@ async def proxy_request(request: Request, server_id: str, path: str):
                 headers,
                 body,
                 server_id,
+                target_host=target_host,
+                slot_id=slot_id,
+                slot_file=slot_file,
             )
 
         # Non-streaming: buffer entire response
@@ -302,6 +420,11 @@ async def proxy_request(request: Request, server_id: str, path: str):
                 content = b""
                 async for chunk in response.aiter_bytes():
                     content += chunk
+
+                # Save KV cache slot after non-streaming response
+                if slot_file:
+                    await _save_slot(target_host, slot_id, slot_file)
+                    slot_saved = True
 
                 return Response(
                     content=content,
@@ -338,5 +461,8 @@ async def proxy_request(request: Request, server_id: str, path: str):
         # Decrement for non-streaming requests and errors.
         # Streaming requests decrement inside _stream_upstream's iterator
         # finally block when the stream fully drains or client disconnects.
-        if not is_streaming:
+        if not is_streaming and not slot_saved:
+            # Save slot on error path for non-streaming chat completions
+            if slot_file:
+                await _save_slot(target_host, slot_id, slot_file)
             server_cache.decrement_use(server_id)

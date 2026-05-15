@@ -216,3 +216,64 @@ class TestSlotPersistenceArgumentBuilder:
             # Flags should still be present even though dir creation failed
             assert "--slot-save-path" in args_str
             assert "/nonexistent/deep/slots" in args_str
+
+
+class TestSlotProxyHelpers:
+    """Test slot file path generation and slot ID resolution in proxy router."""
+
+    def test_slot_file_path(self):
+        """Slot file path is built correctly from session_id."""
+        import importlib
+
+        env = os.environ.copy()
+        env["SLOT_SAVE_DIR"] = "/data/slots"
+        with patch.dict(os.environ, env, clear=True):
+            for mod in list(sys.modules):
+                if mod.startswith("config") or mod.startswith("proxy"):
+                    del sys.modules[mod]
+            import config
+            importlib.reload(config)
+            from proxy.router import _slot_file_path
+
+            path = _slot_file_path("session-abc-123")
+            assert path == "/data/slots/slot_session-abc-123.bin"
+
+    def test_resolve_slot_id_consistent(self):
+        """Same session_id always maps to the same slot."""
+        from proxy.router import _resolve_slot_id
+
+        session = "my-session-id"
+        slot_a = _resolve_slot_id(session, "server-1", 4)
+        slot_b = _resolve_slot_id(session, "server-1", 4)
+        assert slot_a == slot_b
+
+    def test_resolve_slot_id_different_sessions(self):
+        """Different session_ids may map to different slots."""
+        from proxy.router import _resolve_slot_id
+
+        # With enough sessions, at least two should land on different slots
+        slots_seen = set()
+        for i in range(10):
+            sid = _resolve_slot_id(f"session-{i}", "server-1", 4)
+            slots_seen.add(sid)
+        # With 10 sessions and 4 slots, we should see multiple slots used
+        assert len(slots_seen) > 1
+
+    def test_resolve_slot_id_range(self):
+        """Slot ID is always within valid range."""
+        from proxy.router import _resolve_slot_id
+
+        for num_slots in [1, 2, 4, 8, 16, 64, 256]:
+            for i in range(20):
+                sid = _resolve_slot_id(f"session-{i}", "server-1", num_slots)
+                assert 0 <= sid < num_slots, (
+                    f"slot {sid} out of range for {num_slots} slots"
+                )
+
+    def test_resolve_slot_id_single_slot(self):
+        """With 1 slot, all sessions map to slot 0."""
+        from proxy.router import _resolve_slot_id
+
+        for i in range(10):
+            sid = _resolve_slot_id(f"session-{i}", "server-1", 1)
+            assert sid == 0

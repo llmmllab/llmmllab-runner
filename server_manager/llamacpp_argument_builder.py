@@ -158,6 +158,7 @@ class LlamaCppArgumentBuilder:
         if params.think:
             config["reasoning"] = "on"
             config["reasoning_budget"] = 16384
+            config["reasoning_format"] = "deepseek"
         else:
             config["reasoning"] = "off"
 
