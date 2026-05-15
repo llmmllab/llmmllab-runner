@@ -131,6 +131,7 @@ async def _stream_upstream(
 
     If slot_file is provided, saves the KV cache slot after the stream drains.
     """
+    import asyncio
 
     try:
         response = await client.send(
@@ -164,24 +165,47 @@ async def _stream_upstream(
             async for chunk in response.aiter_bytes():
                 yield chunk
         finally:
-            logger.info("Stream ended, cleaning up", slot_file=slot_file, target_host=target_host)
             # Close the upstream response (aborts connection if still open,
             # which signals llama.cpp to stop generating for this slot)
             await response.aclose()
             await client.aclose()
-            # Save KV cache slot before marking server idle
+            # Save KV cache slot and decrement use count in a background task
+            # to avoid being cancelled by the event loop when the client
+            # disconnects.  The finally block runs inside a CancelledError
+            # context, so any await can be immediately re-cancelled.
             if slot_file and target_host:
-                await _save_slot(target_host, slot_id, slot_file)
-            # Request fully consumed (or client disconnected) — mark server idle
-            from app import server_cache
-
-            server_cache.decrement_use(server_id)
+                asyncio.create_task(_safe_save_and_decrement(
+                    target_host, slot_id, slot_file, server_id
+                ))
+            else:
+                asyncio.create_task(_safe_decrement(server_id))
 
     return StreamingResponse(
         content=upstream_iterator(),
         status_code=status_code,
         headers=clean_headers,
     )
+
+
+async def _safe_save_and_decrement(
+    target_host: str, slot_id: int, slot_file: str, server_id: str
+) -> None:
+    """Save slot and decrement use count, immune to task cancellation."""
+    try:
+        await _save_slot(target_host, slot_id, slot_file)
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        logger.warning("Background slot save failed", error=str(e))
+    finally:
+        from app import server_cache
+        server_cache.decrement_use(server_id)
+
+
+async def _safe_decrement(server_id: str) -> None:
+    """Decrement use count in a background task."""
+    from app import server_cache
+    server_cache.decrement_use(server_id)
 
 
 @router.post("/v1/server/{server_id}/slots/{slot_id}/save")
