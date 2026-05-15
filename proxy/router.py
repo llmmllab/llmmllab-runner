@@ -451,6 +451,7 @@ async def proxy_request(request: Request, server_id: str, path: str):
             "te",
             "trailers",
             "proxy-connection",
+            "content-length",  # stripped — body may be modified (slot_id_or_index)
         }
         headers = dict(request.headers)
         for h in hop_by_hop:
