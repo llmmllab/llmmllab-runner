@@ -182,20 +182,11 @@ async def _stream_upstream(
             async for chunk in response.aiter_bytes():
                 yield chunk
         finally:
-            # Close the upstream response FIRST (aborts connection if still
-            # open, which signals llama.cpp to stop generating for this slot).
-            # This must complete before anything else — a hanging save must
-            # not delay the close, as it would block the llama.cpp slot.
-            await response.aclose()
-            await client.aclose()
-
-            from app import server_cache
-            server_cache.decrement_use(server_id)
-
-            # Save KV cache slot.  This runs AFTER the upstream connection
-            # is closed, so llama.cpp has finished with the slot.  Use a
-            # short timeout — if save takes longer than 5s it's hung and
-            # we skip it rather than stalling the response.
+            # Save KV cache slot BEFORE closing the upstream connection.
+            # The slot still holds its KV cache data while the connection
+            # is open.  Once aclose() fires, llama.cpp may free the slot
+            # and the save would get nothing or a 404.  Use a short timeout
+            # so a hung save doesn't stall the response.
             if slot_file and target_host:
                 actual_slot = resp_slot_id if resp_slot_id is not None else slot_id
                 if session_id:
@@ -208,6 +199,14 @@ async def _stream_upstream(
                     raise
                 except Exception as e:
                     logger.warning("Slot save failed in finally", error=str(e))
+
+            # Close the upstream response (aborts connection if still open,
+            # which signals llama.cpp to stop generating for this slot)
+            await response.aclose()
+            await client.aclose()
+
+            from app import server_cache
+            server_cache.decrement_use(server_id)
 
     return StreamingResponse(
         content=upstream_iterator(),
