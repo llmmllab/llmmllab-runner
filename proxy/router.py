@@ -51,27 +51,42 @@ async def _restore_slot(target_host: str, slot_id: int, slot_file: str) -> None:
     Silently skips if the slot file doesn't exist (first request for session).
     """
     if not os.path.exists(slot_file):
+        logger.debug("Slot file does not exist, skipping restore", slot_file=slot_file)
         return
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
-            await client.post(
+            resp = await client.post(
                 f"{target_host}/slots/{slot_id}/restore",
                 json={"filename": slot_file},
             )
+            logger.info(
+                "Slot restore response",
+                slot_file=slot_file,
+                slot_id=slot_id,
+                status=resp.status_code,
+                body=resp.text[:200],
+            )
     except Exception as e:
-        logger.warning(f"Slot restore failed for {slot_file}: {e}")
+        logger.warning("Slot restore failed", slot_file=slot_file, slot_id=slot_id, error=str(e))
 
 
 async def _save_slot(target_host: str, slot_id: int, slot_file: str) -> None:
     """Save the KV cache slot to disk after a chat completion."""
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
-            await client.post(
+            resp = await client.post(
                 f"{target_host}/slots/{slot_id}/save",
                 json={"filename": slot_file},
             )
+            logger.info(
+                "Slot save response",
+                slot_file=slot_file,
+                slot_id=slot_id,
+                status=resp.status_code,
+                body=resp.text[:200],
+            )
     except Exception as e:
-        logger.warning(f"Slot save failed for {slot_file}: {e}")
+        logger.warning("Slot save failed", slot_file=slot_file, slot_id=slot_id, error=str(e))
 
 
 async def _discover_num_slots(target_host: str, server_id: str) -> int:
@@ -85,12 +100,13 @@ async def _discover_num_slots(target_host: str, server_id: str) -> int:
                 slots = resp.json()
                 num = len(slots) if slots else 1
                 _num_slots_cache[server_id] = num
+                logger.info("Discovered slots", server_id=server_id, num_slots=num)
                 # Bounce oldest entries to prevent memory leak from evicted servers
                 if len(_num_slots_cache) > 100:
                     _num_slots_cache.pop(next(iter(_num_slots_cache)))
                 return num
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning("Failed to discover slots, falling back to 1", server_id=server_id, error=str(e))
     # Fallback
     _num_slots_cache[server_id] = 1
     return 1
@@ -283,6 +299,20 @@ async def proxy_request(request: Request, server_id: str, path: str):
         num_slots = await _discover_num_slots(target_host, server_id)
         slot_id = _resolve_slot_id(session_id, server_id, num_slots)
         slot_file = _slot_file_path(session_id)
+        logger.info(
+            "Slot persistence enabled",
+            session_id=session_id,
+            slot_id=slot_id,
+            slot_file=slot_file,
+            slot_save_dir=SLOT_SAVE_DIR,
+        )
+    elif is_chat_completion:
+        logger.info(
+            "Slot persistence skipped",
+            has_slot_dir=bool(SLOT_SAVE_DIR),
+            has_session_id=bool(session_id),
+            is_chat=is_chat_completion,
+        )
 
     # Reject chat completion requests when all slots are busy to prevent
     # request queueing that causes cascading timeouts with --parallel 1.
