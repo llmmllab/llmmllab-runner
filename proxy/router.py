@@ -418,6 +418,16 @@ async def proxy_request(request: Request, server_id: str, path: str):
         # Read request body
         body = await request.body()
 
+        # Inject slot_id_or_index so llama.cpp uses our designated slot
+        upstream_body = body
+        if slot_file and is_chat_completion and body:
+            try:
+                body_dict = json.loads(body)
+                body_dict["slot_id_or_index"] = slot_id
+                upstream_body = json.dumps(body_dict)
+            except Exception:
+                pass
+
         # Build headers (exclude hop-by-hop)
         hop_by_hop = {
             "host",
@@ -466,7 +476,7 @@ async def proxy_request(request: Request, server_id: str, path: str):
                 method,
                 upstream_url,
                 headers,
-                body,
+                upstream_body,
                 server_id,
                 target_host=target_host,
                 slot_id=slot_id,
@@ -480,11 +490,11 @@ async def proxy_request(request: Request, server_id: str, path: str):
                 method=method,
                 url=upstream_url,
                 headers=headers,
-                content=body if body else None,
+                content=upstream_body if upstream_body else None,
             ) as response:
-                content = b""
+                resp_content = b""
                 async for chunk in response.aiter_bytes():
-                    content += chunk
+                    resp_content += chunk
 
                 # Save KV cache slot after non-streaming response
                 if slot_file:
@@ -493,7 +503,7 @@ async def proxy_request(request: Request, server_id: str, path: str):
                     slot_saved = True
 
                 return Response(
-                    content=content,
+                    content=resp_content,
                     status_code=response.status_code,
                     headers={
                         k: v
