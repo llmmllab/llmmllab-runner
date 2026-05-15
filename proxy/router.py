@@ -72,6 +72,7 @@ async def _restore_slot(target_host: str, slot_id: int, slot_file: str) -> None:
 
 async def _save_slot(target_host: str, slot_id: int, slot_file: str) -> None:
     """Save the KV cache slot to disk after a chat completion."""
+    logger.info("Attempting slot save", target_host=target_host, slot_id=slot_id, slot_file=slot_file)
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
             resp = await client.post(
