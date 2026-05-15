@@ -157,6 +157,14 @@ class ModelParameters(BaseModel):
         ),
     ] = "medium"
     """Reasoning effort level for chain-of-thought processing"""
+    reasoning_budget: Annotated[
+        Optional[int],
+        Field(
+            default=None,
+            description="Maximum tokens to spend on reasoning (chain-of-thought) before generating final answer",
+        ),
+    ] = None
+    """Maximum tokens to spend on reasoning (chain-of-thought) before generating final answer"""
     flash_attention: Annotated[
         Optional[bool],
         Field(
