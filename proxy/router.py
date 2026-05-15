@@ -30,6 +30,8 @@ router = APIRouter()
 
 # server_id -> number of slots (discovered from upstream /slots endpoint)
 _num_slots_cache: Dict[str, int] = {}
+# session_id -> slot_id (discovered from first request response)
+_session_slot_cache: Dict[str, int] = {}
 
 
 def _slot_file_path(session_id: str) -> str:
@@ -45,14 +47,15 @@ def _resolve_slot_id(session_id: str, server_id: str, num_slots: int) -> int:
     return int(hashlib.md5(session_id.encode()).hexdigest(), 16) % num_slots
 
 
-async def _restore_slot(target_host: str, slot_id: int, slot_file: str) -> None:
+async def _restore_slot(target_host: str, slot_id: int, slot_file: str) -> bool:
     """Restore a KV cache slot from disk before a chat completion.
 
+    Returns True if the slot was successfully restored, False otherwise.
     Silently skips if the slot file doesn't exist (first request for session).
     """
     if not os.path.exists(slot_file):
         logger.debug("Slot file does not exist, skipping restore", slot_file=slot_file)
-        return
+        return False
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
             resp = await client.post(
@@ -66,8 +69,10 @@ async def _restore_slot(target_host: str, slot_id: int, slot_file: str) -> None:
                 status=resp.status_code,
                 body=resp.text[:200],
             )
+            return resp.status_code == 200
     except Exception as e:
         logger.warning("Slot restore failed", slot_file=slot_file, slot_id=slot_id, error=str(e))
+        return False
 
 
 async def _save_slot(target_host: str, slot_id: int, slot_file: str) -> None:
@@ -118,6 +123,7 @@ async def _stream_upstream(
     target_host: str = "",
     slot_id: int = 0,
     slot_file: str = "",
+    session_id: str = "",
 ):
     """Stream response from upstream, keeping client open for the entire duration.
 
@@ -160,6 +166,17 @@ async def _stream_upstream(
         if k.lower() not in ("transfer-encoding", "content-length")
     }
 
+    # Capture the slot ID from llama.cpp's response headers before the
+    # response is consumed.  This tells us which slot llama.cpp assigned,
+    # which is needed for save/restore when we don't force a specific slot.
+    resp_slot_id = None
+    x_slot = response.headers.get("x-slot-id")
+    if x_slot:
+        try:
+            resp_slot_id = int(x_slot)
+        except (ValueError, TypeError):
+            pass
+
     async def upstream_iterator():
         try:
             async for chunk in response.aiter_bytes():
@@ -174,12 +191,14 @@ async def _stream_upstream(
             # finally block.  Even when called from a CancelledError context
             # (client disconnect), the awaits below complete before the
             # exception propagates — this is guaranteed by asyncio.
-            # Using asyncio.create_task was unreliable: the scheduled task
-            # would never run if the iterator was garbage collected before
-            # the event loop got to it.
             if slot_file and target_host:
                 try:
-                    await _save_slot(target_host, slot_id, slot_file)
+                    # Use the slot ID from response headers if available,
+                    # otherwise fall back to the hash-assigned slot_id.
+                    actual_slot = resp_slot_id if resp_slot_id is not None else slot_id
+                    if session_id:
+                        _session_slot_cache[session_id] = actual_slot
+                    await _save_slot(target_host, actual_slot, slot_file)
                 except asyncio.CancelledError:
                     raise
                 except Exception as e:
@@ -394,7 +413,9 @@ async def proxy_request(request: Request, server_id: str, path: str):
 
     # Restore KV cache slot before chat completion
     if slot_file:
-        await _restore_slot(target_host, slot_id, slot_file)
+        # Use cached slot ID if we already know which slot llama.cpp assigned
+        restore_slot_id = _session_slot_cache.get(session_id, slot_id)
+        await _restore_slot(target_host, restore_slot_id, slot_file)
 
     # Mark server as in-use during request
     server_cache.increment_use(server_id)
@@ -408,12 +429,14 @@ async def proxy_request(request: Request, server_id: str, path: str):
         # Read request body
         body = await request.body()
 
-        # Inject slot_id_or_index so llama.cpp uses our designated slot
+        # Inject slot_id_or_index only when we know the slot from a previous
+        # request. This ensures llama.cpp uses the same slot we saved to,
+        # avoiding LCP similarity mismatches that cause empty responses.
         upstream_body = body
-        if slot_file and is_chat_completion and body:
+        if slot_file and is_chat_completion and body and session_id in _session_slot_cache:
             try:
                 body_dict = json.loads(body)
-                body_dict["slot_id_or_index"] = slot_id
+                body_dict["slot_id_or_index"] = _session_slot_cache[session_id]
                 upstream_body = json.dumps(body_dict)
             except Exception:
                 pass
@@ -471,6 +494,7 @@ async def proxy_request(request: Request, server_id: str, path: str):
                 target_host=target_host,
                 slot_id=slot_id,
                 slot_file=slot_file,
+                session_id=session_id or "",
             )
 
         # Non-streaming: buffer entire response
@@ -488,8 +512,17 @@ async def proxy_request(request: Request, server_id: str, path: str):
 
                 # Save KV cache slot after non-streaming response
                 if slot_file:
-                    logger.info("Saving slot (non-streaming path)", slot_file=slot_file)
-                    await _save_slot(target_host, slot_id, slot_file)
+                    actual_slot = slot_id
+                    x_slot = response.headers.get("x-slot-id")
+                    if x_slot:
+                        try:
+                            actual_slot = int(x_slot)
+                        except (ValueError, TypeError):
+                            pass
+                    if session_id:
+                        _session_slot_cache[session_id] = actual_slot
+                    logger.info("Saving slot (non-streaming path)", slot_file=slot_file, slot_id=actual_slot)
+                    await _save_slot(target_host, actual_slot, slot_file)
                     slot_saved = True
 
                 return Response(
