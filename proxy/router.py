@@ -79,7 +79,7 @@ async def _save_slot(target_host: str, slot_id: int, slot_file: str) -> None:
     """Save the KV cache slot to disk after a chat completion."""
     logger.info("Attempting slot save", target_host=target_host, slot_id=slot_id, slot_file=slot_file)
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        async with httpx.AsyncClient(timeout=4.0) as client:
             resp = await client.post(
                 f"{target_host}/slots/{slot_id}/save",
                 json={"filename": os.path.basename(slot_file)},
@@ -182,33 +182,32 @@ async def _stream_upstream(
             async for chunk in response.aiter_bytes():
                 yield chunk
         finally:
-            # Close the upstream response (aborts connection if still open,
-            # which signals llama.cpp to stop generating for this slot)
+            # Close the upstream response FIRST (aborts connection if still
+            # open, which signals llama.cpp to stop generating for this slot).
+            # This must complete before anything else — a hanging save must
+            # not delay the close, as it would block the llama.cpp slot.
             await response.aclose()
             await client.aclose()
 
-            # Save KV cache slot and decrement use count directly in the
-            # finally block.  Even when called from a CancelledError context
-            # (client disconnect), the awaits below complete before the
-            # exception propagates — this is guaranteed by asyncio.
+            from app import server_cache
+            server_cache.decrement_use(server_id)
+
+            # Save KV cache slot.  This runs AFTER the upstream connection
+            # is closed, so llama.cpp has finished with the slot.  Use a
+            # short timeout — if save takes longer than 5s it's hung and
+            # we skip it rather than stalling the response.
             if slot_file and target_host:
+                actual_slot = resp_slot_id if resp_slot_id is not None else slot_id
+                if session_id:
+                    _session_slot_cache[session_id] = actual_slot
                 try:
-                    # Use the slot ID from response headers if available,
-                    # otherwise fall back to the hash-assigned slot_id.
-                    actual_slot = resp_slot_id if resp_slot_id is not None else slot_id
-                    if session_id:
-                        _session_slot_cache[session_id] = actual_slot
-                    await _save_slot(target_host, actual_slot, slot_file)
+                    await asyncio.wait_for(_save_slot(target_host, actual_slot, slot_file), timeout=5.0)
+                except asyncio.TimeoutError:
+                    logger.warning("Slot save timed out (5s), skipping", slot_file=slot_file)
                 except asyncio.CancelledError:
                     raise
                 except Exception as e:
                     logger.warning("Slot save failed in finally", error=str(e))
-                finally:
-                    from app import server_cache
-                    server_cache.decrement_use(server_id)
-            else:
-                from app import server_cache
-                server_cache.decrement_use(server_id)
 
     return StreamingResponse(
         content=upstream_iterator(),
