@@ -57,7 +57,7 @@ async def _restore_slot(target_host: str, slot_id: int, slot_file: str) -> None:
         async with httpx.AsyncClient(timeout=30.0) as client:
             resp = await client.post(
                 f"{target_host}/slots/{slot_id}/restore",
-                json={"filename": slot_file},
+                json={"filename": os.path.basename(slot_file)},
             )
             logger.info(
                 "Slot restore response",
@@ -76,7 +76,7 @@ async def _save_slot(target_host: str, slot_id: int, slot_file: str) -> None:
         async with httpx.AsyncClient(timeout=30.0) as client:
             resp = await client.post(
                 f"{target_host}/slots/{slot_id}/save",
-                json={"filename": slot_file},
+                json={"filename": os.path.basename(slot_file)},
             )
             logger.info(
                 "Slot save response",
@@ -423,6 +423,14 @@ async def proxy_request(request: Request, server_id: str, path: str):
             except Exception:
                 is_likely_sse = True  # be safe, stream if we can't parse
 
+        logger.info(
+            "Proxy path",
+            server_id=server_id,
+            path=path,
+            is_streaming=is_likely_sse,
+            has_slot_file=bool(slot_file),
+        )
+
         if is_likely_sse:
             # Streaming: decrement and slot save happen in upstream_iterator's
             # finally block when the stream drains or client disconnects.
@@ -440,6 +448,7 @@ async def proxy_request(request: Request, server_id: str, path: str):
             )
 
         # Non-streaming: buffer entire response
+        logger.info("Taking non-streaming path", server_id=server_id, has_slot_file=bool(slot_file))
         async with client:
             async with client.stream(
                 method=method,
@@ -453,6 +462,7 @@ async def proxy_request(request: Request, server_id: str, path: str):
 
                 # Save KV cache slot after non-streaming response
                 if slot_file:
+                    logger.info("Saving slot (non-streaming path)", slot_file=slot_file)
                     await _save_slot(target_host, slot_id, slot_file)
                     slot_saved = True
 
