@@ -118,26 +118,29 @@ async def _discover_num_slots(target_host: str, server_id: str) -> int:
     return 1
 
 
-async def _find_used_slot(target_host: str, num_slots: int) -> int | None:
+async def _find_used_slot(target_host: str, num_slots: int, before_tokens: Dict[int, int] | None = None) -> int | None:
     """Find which slot llama.cpp actually used by querying /slots.
 
     llama.cpp doesn't send x-slot-id in response headers, so we discover
-    the used slot by finding the one with the most tokens processed.
+    the used slot by comparing token counts before and after the request.
+    If no baseline is provided, falls back to the slot that's processing.
     """
     try:
         async with httpx.AsyncClient(timeout=3.0) as client:
             resp = await client.get(f"{target_host}/slots")
             if resp.status_code == 200:
                 slots = resp.json()
-                best_id = None
-                best_tokens = 0
+                if before_tokens is not None:
+                    # Find the slot whose token count changed
+                    for s in slots:
+                        sid = s.get("id")
+                        n = s.get("n_tokens", 0)
+                        if sid is not None and n != before_tokens.get(sid, 0):
+                            return sid
+                # Fallback: slot that's actively processing
                 for s in slots:
-                    n = s.get("n_tokens", 0)
-                    if n > best_tokens:
-                        best_tokens = n
-                        best_id = s.get("id")
-                if best_id is not None and best_tokens > 0:
-                    return best_id
+                    if s.get("is_processing", False):
+                        return s.get("id")
     except Exception as e:
         logger.warning("Failed to find used slot", error=str(e))
     return None
@@ -149,6 +152,7 @@ async def _stream_upstream(
     slot_id: int = 0,
     slot_file: str = "",
     session_id: str = "",
+    before_tokens: Dict[int, int] | None = None,
 ):
     """Stream response from upstream, keeping client open for the entire duration.
 
@@ -191,9 +195,20 @@ async def _stream_upstream(
         if k.lower() not in ("transfer-encoding", "content-length")
     }
 
+    # Track which slot llama.cpp actually used, discovered on first chunk
+    actual_slot_id = [None]
+
     async def upstream_iterator():
         try:
             async for chunk in response.aiter_bytes():
+                # Discover the actual slot on the first chunk by diffing
+                # slot token counts against the pre-request baseline.
+                if before_tokens and actual_slot_id[0] is None:
+                    actual_slot_id[0] = await _find_used_slot(
+                        target_host,
+                        _num_slots_cache.get(server_id, 1),
+                        before_tokens,
+                    )
                 yield chunk
         finally:
             # Save KV cache slot BEFORE closing the upstream connection.
@@ -202,17 +217,12 @@ async def _stream_upstream(
             # and the save would get nothing or a 404.  Use a short timeout
             # so a hung save doesn't stall the response.
             if slot_file and target_host:
-                # llama.cpp doesn't send x-slot-id in response headers, so
-                # we discover the actual slot by querying /slots and finding
-                # the one with the most tokens processed.
-                num = _num_slots_cache.get(server_id, 1)
-                actual_slot = await _find_used_slot(target_host, num)
-                if actual_slot is None:
-                    actual_slot = slot_id
+                if actual_slot_id[0] is None:
+                    actual_slot_id[0] = slot_id
                 if session_id:
-                    _session_slot_cache[session_id] = actual_slot
+                    _session_slot_cache[session_id] = actual_slot_id[0]
                 try:
-                    await asyncio.wait_for(_save_slot(target_host, actual_slot, slot_file), timeout=5.0)
+                    await asyncio.wait_for(_save_slot(target_host, actual_slot_id[0], slot_file), timeout=5.0)
                 except asyncio.TimeoutError:
                     logger.warning("Slot save timed out (5s), skipping", slot_file=slot_file)
                 except asyncio.CancelledError:
@@ -447,14 +457,13 @@ async def proxy_request(request: Request, server_id: str, path: str):
         # Read request body
         body = await request.body()
 
-        # Inject slot_id_or_index only when we know the slot from a previous
-        # request. This ensures llama.cpp uses the same slot we saved to,
-        # avoiding LCP similarity mismatches that cause empty responses.
+        # Inject id_slot only when we know the slot from a previous
+        # request. This ensures llama.cpp uses the same slot we saved to.
         upstream_body = body
         if slot_file and is_chat_completion and body and session_id in _session_slot_cache:
             try:
                 body_dict = json.loads(body)
-                body_dict["slot_id_or_index"] = _session_slot_cache[session_id]
+                body_dict["id_slot"] = _session_slot_cache[session_id]
                 upstream_body = json.dumps(body_dict)
             except Exception:
                 pass
@@ -471,7 +480,7 @@ async def proxy_request(request: Request, server_id: str, path: str):
             "te",
             "trailers",
             "proxy-connection",
-            "content-length",  # stripped — body may be modified (slot_id_or_index)
+            "content-length",  # stripped — body may be modified (id_slot)
         }
         headers = dict(request.headers)
         for h in hop_by_hop:
@@ -500,6 +509,21 @@ async def proxy_request(request: Request, server_id: str, path: str):
         )
 
         if is_likely_sse:
+            # Capture slot token baseline before the request so we can
+            # diff after to find which slot llama.cpp actually used.
+            before_tokens: Dict[int, int] = {}
+            if slot_file and target_host:
+                try:
+                    async with httpx.AsyncClient(timeout=2.0) as bl_client:
+                        bl_resp = await bl_client.get(f"{target_host}/slots")
+                        if bl_resp.status_code == 200:
+                            for s in bl_resp.json():
+                                sid = s.get("id")
+                                if sid is not None:
+                                    before_tokens[sid] = s.get("n_tokens", 0)
+                except Exception:
+                    pass
+
             # Streaming: decrement and slot save happen in upstream_iterator's
             # finally block when the stream drains or client disconnects.
             is_streaming = True
@@ -514,6 +538,7 @@ async def proxy_request(request: Request, server_id: str, path: str):
                 slot_id=slot_id,
                 slot_file=slot_file,
                 session_id=session_id or "",
+                before_tokens=before_tokens if before_tokens else None,
             )
 
         # Non-streaming: buffer entire response

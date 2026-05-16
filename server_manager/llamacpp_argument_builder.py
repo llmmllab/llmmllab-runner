@@ -102,7 +102,7 @@ class LlamaCppArgumentBuilder:
                 "timeout": 600,
                 "context_shift": True,
                 "mirostat": 1,
-                "cache_ram": 0,
+                # "cache_ram": 0,
                 "parallel": params.parallel or 4,
                 "kv_unified": True,
                 "repeat_penalty": params.repeat_penalty or 1.1,
@@ -116,6 +116,11 @@ class LlamaCppArgumentBuilder:
                 "split_mode": params.split_mode or "layer",
                 "jinja": True,
                 "no_webui": True,
+                # Disable LCP prompt similarity matching so that `id_slot`
+                # assignments in the API body are not overridden by llama.cpp's
+                # internal slot-matching logic, which would defeat hash-based
+                # slot assignment required for session persistence.
+                "slot_prompt_similarity": "0",
             }
         )
 
