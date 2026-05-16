@@ -42,6 +42,7 @@
     main_gpu: 2
     # n_cpu_moe: 10
     # ctx_size_reduction_limit: 1.0
+    slot_prompt_similarity: 0
     parallel: 4
     is_default: True
     split_mode: "row"
