@@ -619,6 +619,7 @@ async def proxy_request(request: Request, server_id: str, path: str):
                 stream_body = json.dumps(body_dict)
             except Exception:
                 stream_body = upstream_body
+            logger.info("Overriding upstream to stream=true for slot save", server_id=server_id)
 
             try:
                 response = await client.send(
