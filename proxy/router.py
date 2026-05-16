@@ -118,6 +118,31 @@ async def _discover_num_slots(target_host: str, server_id: str) -> int:
     return 1
 
 
+async def _find_used_slot(target_host: str, num_slots: int) -> int | None:
+    """Find which slot llama.cpp actually used by querying /slots.
+
+    llama.cpp doesn't send x-slot-id in response headers, so we discover
+    the used slot by finding the one with the most tokens processed.
+    """
+    try:
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            resp = await client.get(f"{target_host}/slots")
+            if resp.status_code == 200:
+                slots = resp.json()
+                best_id = None
+                best_tokens = 0
+                for s in slots:
+                    n = s.get("n_tokens", 0)
+                    if n > best_tokens:
+                        best_tokens = n
+                        best_id = s.get("id")
+                if best_id is not None and best_tokens > 0:
+                    return best_id
+    except Exception as e:
+        logger.warning("Failed to find used slot", error=str(e))
+    return None
+
+
 async def _stream_upstream(
     client, method, url, headers, body, server_id,
     target_host: str = "",
@@ -166,17 +191,6 @@ async def _stream_upstream(
         if k.lower() not in ("transfer-encoding", "content-length")
     }
 
-    # Capture the slot ID from llama.cpp's response headers before the
-    # response is consumed.  This tells us which slot llama.cpp assigned,
-    # which is needed for save/restore when we don't force a specific slot.
-    resp_slot_id = None
-    x_slot = response.headers.get("x-slot-id")
-    if x_slot:
-        try:
-            resp_slot_id = int(x_slot)
-        except (ValueError, TypeError):
-            pass
-
     async def upstream_iterator():
         try:
             async for chunk in response.aiter_bytes():
@@ -188,7 +202,13 @@ async def _stream_upstream(
             # and the save would get nothing or a 404.  Use a short timeout
             # so a hung save doesn't stall the response.
             if slot_file and target_host:
-                actual_slot = resp_slot_id if resp_slot_id is not None else slot_id
+                # llama.cpp doesn't send x-slot-id in response headers, so
+                # we discover the actual slot by querying /slots and finding
+                # the one with the most tokens processed.
+                num = _num_slots_cache.get(server_id, 1)
+                actual_slot = await _find_used_slot(target_host, num)
+                if actual_slot is None:
+                    actual_slot = slot_id
                 if session_id:
                     _session_slot_cache[session_id] = actual_slot
                 try:
@@ -509,15 +529,12 @@ async def proxy_request(request: Request, server_id: str, path: str):
                 async for chunk in response.aiter_bytes():
                     resp_content += chunk
 
-                # Save KV cache slot after non-streaming response
+                # Save KV cache slot - discover actual slot from /slots
                 if slot_file:
-                    actual_slot = slot_id
-                    x_slot = response.headers.get("x-slot-id")
-                    if x_slot:
-                        try:
-                            actual_slot = int(x_slot)
-                        except (ValueError, TypeError):
-                            pass
+                    num = _num_slots_cache.get(server_id, 1)
+                    actual_slot = await _find_used_slot(target_host, num)
+                    if actual_slot is None:
+                        actual_slot = slot_id
                     if session_id:
                         _session_slot_cache[session_id] = actual_slot
                     logger.info("Saving slot (non-streaming path)", slot_file=slot_file, slot_id=actual_slot)
