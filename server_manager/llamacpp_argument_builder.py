@@ -120,7 +120,7 @@ class LlamaCppArgumentBuilder:
                 # assignments in the API body are not overridden by llama.cpp's
                 # internal slot-matching logic, which would defeat hash-based
                 # slot assignment required for session persistence.
-                "slot_prompt_similarity": "0",
+                "slot_prompt_similarity": "0.25",
             }
         )
 
