@@ -22,7 +22,7 @@
     clip_model_path: /models/qwen3.6/27b/mmproj.gguf
   parameters:
     num_ctx: 200000
-    repeat_last_n: 64
+    repeat_last_n: 128
     repeat_penalty: 0.5
     temperature: 0.7
     seed: -1
@@ -42,8 +42,9 @@
     main_gpu: 2
     # n_cpu_moe: 10
     # ctx_size_reduction_limit: 1.0
-    parallel: 8
+    parallel: 4
     is_default: True
+    split_mode: "row"
   pipeline: llama
   lora_weights: []
   provider: llama_cpp
