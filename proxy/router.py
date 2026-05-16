@@ -545,18 +545,13 @@ async def proxy_request(request: Request, server_id: str, path: str):
         # Read request body
         body = await request.body()
 
-        # Inject id_slot only when we know the slot from a previous
-        # request. This ensures llama.cpp uses the same slot we saved to.
+        # Inject id_slot for slot persistence.
         upstream_body = body
-        if (
-            slot_file
-            and is_chat_completion
-            and body
-            and session_id in _session_slot_cache
-        ):
+        if slot_file and is_chat_completion and body:
             try:
                 body_dict = json.loads(body)
-                body_dict["id_slot"] = _session_slot_cache[session_id]
+                if session_id in _session_slot_cache:
+                    body_dict["id_slot"] = _session_slot_cache[session_id]
                 upstream_body = json.dumps(body_dict)
             except Exception:
                 pass

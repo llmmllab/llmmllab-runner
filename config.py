@@ -83,3 +83,15 @@ SLOT_SWA_FULL = os.environ.get("SLOT_SWA_FULL", "true").lower() in (
     "1",
     "yes",
 )
+
+# Slot file cleanup: delete slot files older than this many minutes.
+# Only active when SLOT_SAVE_DIR is set. Set to 0 to disable cleanup.
+SLOT_CLEANUP_MAX_AGE_MIN = int(os.environ.get("SLOT_CLEANUP_MAX_AGE_MIN", "1440"))
+
+# Slot file cleanup: maximum total size of /slots directory in MB.
+# When exceeded, oldest files are deleted until under the limit.
+# Set to 0 to disable size-based cleanup.
+SLOT_CLEANUP_MAX_SIZE_MB = int(os.environ.get("SLOT_CLEANUP_MAX_SIZE_MB", "5000"))
+
+# How often (seconds) the slot cleanup task runs.
+SLOT_CLEANUP_INTERVAL_SEC = int(os.environ.get("SLOT_CLEANUP_INTERVAL_SEC", "300"))

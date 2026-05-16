@@ -22,6 +22,10 @@ spec:
           hostPath:
             path: /models
             type: DirectoryOrCreate
+        - name: slots
+          hostPath:
+            path: /slots
+            type: DirectoryOrCreate
         - name: dcgm-uvm
           emptyDir: {}
       containers:
@@ -49,6 +53,8 @@ spec:
             - name: models
               mountPath: /models
               readOnly: true
+            - name: slots
+              mountPath: /slots
           env:
             - name: PYTHONPATH
               value: "/app"
@@ -146,6 +152,10 @@ spec:
           hostPath:
             path: /models
             type: DirectoryOrCreate
+        - name: slots
+          hostPath:
+            path: /slots
+            type: DirectoryOrCreate
         - name: dcgm-uvm
           emptyDir: {}
       containers:
@@ -173,6 +183,8 @@ spec:
             - name: models
               mountPath: /models
               readOnly: true
+            - name: slots
+              mountPath: /slots
           env:
             - name: PYTHONPATH
               value: "/app"

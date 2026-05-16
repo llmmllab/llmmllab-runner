@@ -1,12 +1,22 @@
 """llmmllab-runner - Standalone llama.cpp server manager and proxy."""
 
 import asyncio
+import os
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator, Optional
 
 from fastapi import FastAPI
 
-from config import RUNNER_HOST, RUNNER_PORT, DCGM_METRICS_INTERVAL_SEC, LLAMA_METRICS_INTERVAL_SEC
+from config import (
+    RUNNER_HOST,
+    RUNNER_PORT,
+    DCGM_METRICS_INTERVAL_SEC,
+    LLAMA_METRICS_INTERVAL_SEC,
+    SLOT_SAVE_DIR,
+    SLOT_CLEANUP_MAX_AGE_MIN,
+    SLOT_CLEANUP_MAX_SIZE_MB,
+    SLOT_CLEANUP_INTERVAL_SEC,
+)
 from cache import ServerCache
 from routers import models as models_router
 from routers import servers as servers_router
@@ -29,6 +39,7 @@ logger = llmmllogger.bind(component="RunnerApp")
 server_cache: ServerCache = None  # type: ignore
 _evict_task: Optional[asyncio.Task] = None
 _metrics_task: Optional[asyncio.Task] = None
+_slot_cleanup_task: Optional[asyncio.Task] = None
 
 # Module-level ModelLoader singleton (avoids re-instantiation on every health check)
 _model_loader = None
@@ -45,7 +56,7 @@ def get_model_loader():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
-    global server_cache, _evict_task, _metrics_task
+    global server_cache, _evict_task, _metrics_task, _slot_cleanup_task
     logger.info("Runner starting up")
     server_cache = ServerCache()
     logger.info("ServerCache initialized")
@@ -84,11 +95,76 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     _metrics_task = asyncio.create_task(scrape_extended_metrics())
 
+    # Start periodic slot file cleanup task
+    async def cleanup_slot_files():
+        import glob as glob_mod
+        import time as time_mod
+
+        while True:
+            await asyncio.sleep(SLOT_CLEANUP_INTERVAL_SEC)
+            if not SLOT_SAVE_DIR:
+                continue
+
+            try:
+                slot_files = glob_mod.glob(f"{SLOT_SAVE_DIR}/*.bin")
+                now = time_mod.time()
+                max_age_sec = SLOT_CLEANUP_MAX_AGE_MIN * 60
+                deleted = 0
+                total_freed = 0
+
+                # Delete files older than SLOT_CLEANUP_MAX_AGE_MIN
+                if max_age_sec > 0:
+                    for filepath in sorted(slot_files):
+                        try:
+                            mtime = os.path.getmtime(filepath)
+                            if now - mtime > max_age_sec:
+                                size = os.path.getsize(filepath)
+                                os.remove(filepath)
+                                deleted += 1
+                                total_freed += size
+                        except OSError:
+                            pass
+
+                # Enforce total size limit
+                if SLOT_CLEANUP_MAX_SIZE_MB > 0:
+                    target_bytes = SLOT_CLEANUP_MAX_SIZE_MB * 1024 * 1024
+                    while True:
+                        try:
+                            remaining = glob_mod.glob(f"{SLOT_SAVE_DIR}/*.bin")
+                            total_size = sum(
+                                os.path.getsize(f) for f in remaining
+                                if os.path.isfile(f)
+                            )
+                            if total_size <= target_bytes:
+                                break
+                            oldest = min(
+                                remaining, key=lambda f: os.path.getmtime(f)
+                            )
+                            size = os.path.getsize(oldest)
+                            os.remove(oldest)
+                            deleted += 1
+                            total_freed += size
+                        except (OSError, ValueError):
+                            break
+
+                if deleted:
+                    logger.info(
+                        "Slot cleanup complete",
+                        deleted=deleted,
+                        freed_mb=round(total_freed / 1024 / 1024, 2),
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.debug(f"Slot cleanup failed: {e}")
+
+    _slot_cleanup_task = asyncio.create_task(cleanup_slot_files())
+
     yield
 
     logger.info("Runner shutting down")
     # Cancel the background tasks before stopping servers
-    for task in (_evict_task, _metrics_task):
+    for task in (_evict_task, _metrics_task, _slot_cleanup_task):
         if task:
             task.cancel()
             try:
