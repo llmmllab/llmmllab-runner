@@ -36,9 +36,7 @@ _num_slots_cache: Dict[str, int] = {}
 _session_slot_cache: Dict[str, int] = {}
 
 
-def _sse_to_nonstreaming(
-    chunks: bytes, model: str
-) -> Optional[Dict[str, Any]]:
+def _sse_to_nonstreaming(chunks: bytes, model: str) -> Optional[Dict[str, Any]]:
     """Convert buffered SSE (stream=true) response to non-streaming JSON.
 
     Parses ``data: {...}`` lines, concatenates content, and builds a
@@ -124,7 +122,7 @@ async def _restore_slot(target_host: str, slot_id: int, slot_file: str) -> bool:
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
             resp = await client.post(
-                f"{target_host}/slots/{slot_id}/restore",
+                f"{target_host}/slots/{slot_id}?action=restore",
                 json={"filename": os.path.basename(slot_file)},
             )
             logger.info(
@@ -136,17 +134,24 @@ async def _restore_slot(target_host: str, slot_id: int, slot_file: str) -> bool:
             )
             return resp.status_code == 200
     except Exception as e:
-        logger.warning("Slot restore failed", slot_file=slot_file, slot_id=slot_id, error=str(e))
+        logger.warning(
+            "Slot restore failed", slot_file=slot_file, slot_id=slot_id, error=str(e)
+        )
         return False
 
 
 async def _save_slot(target_host: str, slot_id: int, slot_file: str) -> None:
     """Save the KV cache slot to disk after a chat completion."""
-    logger.info("Attempting slot save", target_host=target_host, slot_id=slot_id, slot_file=slot_file)
+    logger.info(
+        "Attempting slot save",
+        target_host=target_host,
+        slot_id=slot_id,
+        slot_file=slot_file,
+    )
     try:
         async with httpx.AsyncClient(timeout=4.0) as client:
             resp = await client.post(
-                f"{target_host}/slots/{slot_id}/save",
+                f"{target_host}/slots/{slot_id}?action=save",
                 json={"filename": os.path.basename(slot_file)},
             )
             logger.info(
@@ -157,7 +162,9 @@ async def _save_slot(target_host: str, slot_id: int, slot_file: str) -> None:
                 body=resp.text[:200],
             )
     except Exception as e:
-        logger.warning("Slot save failed", slot_file=slot_file, slot_id=slot_id, error=str(e))
+        logger.warning(
+            "Slot save failed", slot_file=slot_file, slot_id=slot_id, error=str(e)
+        )
 
 
 async def _discover_num_slots(target_host: str, server_id: str) -> int:
@@ -177,13 +184,19 @@ async def _discover_num_slots(target_host: str, server_id: str) -> int:
                     _num_slots_cache.pop(next(iter(_num_slots_cache)))
                 return num
     except Exception as e:
-        logger.warning("Failed to discover slots, falling back to 1", server_id=server_id, error=str(e))
+        logger.warning(
+            "Failed to discover slots, falling back to 1",
+            server_id=server_id,
+            error=str(e),
+        )
     # Fallback
     _num_slots_cache[server_id] = 1
     return 1
 
 
-async def _find_used_slot(target_host: str, num_slots: int, before_tokens: Dict[int, int] | None = None) -> int | None:
+async def _find_used_slot(
+    target_host: str, num_slots: int, before_tokens: Dict[int, int] | None = None
+) -> int | None:
     """Find which slot llama.cpp actually used by querying /slots.
 
     llama.cpp doesn't send x-slot-id in response headers, so we discover
@@ -212,7 +225,12 @@ async def _find_used_slot(target_host: str, num_slots: int, before_tokens: Dict[
 
 
 async def _stream_upstream(
-    client, method, url, headers, body, server_id,
+    client,
+    method,
+    url,
+    headers,
+    body,
+    server_id,
     target_host: str = "",
     slot_id: int = 0,
     slot_file: str = "",
@@ -250,6 +268,7 @@ async def _stream_upstream(
         logger.error("Upstream server %s error before response: %s", server_id, exc)
         await client.aclose()
         from app import server_cache
+
         server_cache.decrement_use(server_id)
         raise
     response_headers = dict(response.headers)
@@ -261,7 +280,7 @@ async def _stream_upstream(
     }
 
     # Track which slot llama.cpp actually used, discovered on first chunk
-    actual_slot_id = [None]
+    actual_slot_id = []
 
     async def upstream_iterator():
         try:
@@ -287,9 +306,14 @@ async def _stream_upstream(
                 if session_id:
                     _session_slot_cache[session_id] = actual_slot_id[0]
                 try:
-                    await asyncio.wait_for(_save_slot(target_host, actual_slot_id[0], slot_file), timeout=5.0)
+                    await asyncio.wait_for(
+                        _save_slot(target_host, actual_slot_id[0], slot_file),
+                        timeout=5.0,
+                    )
                 except asyncio.TimeoutError:
-                    logger.warning("Slot save timed out (5s), skipping", slot_file=slot_file)
+                    logger.warning(
+                        "Slot save timed out (5s), skipping", slot_file=slot_file
+                    )
                 except asyncio.CancelledError:
                     raise
                 except Exception as e:
@@ -301,6 +325,7 @@ async def _stream_upstream(
             await client.aclose()
 
             from app import server_cache
+
             server_cache.decrement_use(server_id)
 
     return StreamingResponse(
@@ -326,14 +351,14 @@ async def save_slot(request: Request, server_id: str, slot_id: int):
         raise HTTPException(status_code=404, detail=f"Server {server_id} not found")
 
     target_host = f"http://127.0.0.1:{entry.port}"
-    upstream_url = f"{target_host}/slots/{slot_id}/save"
+    upstream_url = f"{target_host}/slots/{slot_id}?action=save"
 
     body = await request.body()
     async with httpx.AsyncClient(timeout=30.0) as client:
         try:
             response = await client.post(
                 upstream_url,
-                content=body,
+                content=body if body else b'{"filename":"default.bin"}',
                 headers={"Content-Type": "application/json"},
             )
         except httpx.ConnectError:
@@ -367,14 +392,14 @@ async def restore_slot(request: Request, server_id: str, slot_id: int):
         raise HTTPException(status_code=404, detail=f"Server {server_id} not found")
 
     target_host = f"http://127.0.0.1:{entry.port}"
-    upstream_url = f"{target_host}/slots/{slot_id}/restore"
+    upstream_url = f"{target_host}/slots/{slot_id}?action=restore"
 
     body = await request.body()
     async with httpx.AsyncClient(timeout=30.0) as client:
         try:
             response = await client.post(
                 upstream_url,
-                content=body,
+                content=body if body else b'{"filename":"default.bin"}',
                 headers={"Content-Type": "application/json"},
             )
         except httpx.ConnectError:
@@ -463,9 +488,7 @@ async def proxy_request(request: Request, server_id: str, path: str):
                         # are actively processing.  An empty slots list
                         # (e.g., misconfigured server) should not be
                         # treated as "all busy" — let the upstream handle it.
-                        if slots and all(
-                            s.get("is_processing", False) for s in slots
-                        ):
+                        if slots and all(s.get("is_processing", False) for s in slots):
                             # Estimate remaining time from the busiest slot.
                             # Fall back to 30 s if we can't estimate.
                             retry_after = 30
@@ -525,7 +548,12 @@ async def proxy_request(request: Request, server_id: str, path: str):
         # Inject id_slot only when we know the slot from a previous
         # request. This ensures llama.cpp uses the same slot we saved to.
         upstream_body = body
-        if slot_file and is_chat_completion and body and session_id in _session_slot_cache:
+        if (
+            slot_file
+            and is_chat_completion
+            and body
+            and session_id in _session_slot_cache
+        ):
             try:
                 body_dict = json.loads(body)
                 body_dict["id_slot"] = _session_slot_cache[session_id]
@@ -607,7 +635,11 @@ async def proxy_request(request: Request, server_id: str, path: str):
             )
 
         # Non-streaming path
-        logger.info("Taking non-streaming path", server_id=server_id, has_slot_file=bool(slot_file))
+        logger.info(
+            "Taking non-streaming path",
+            server_id=server_id,
+            has_slot_file=bool(slot_file),
+        )
 
         # If slot persistence is active, always stream upstream to keep the
         # connection open (and the slot assigned) until we can save.  Then
@@ -619,7 +651,9 @@ async def proxy_request(request: Request, server_id: str, path: str):
                 stream_body = json.dumps(body_dict)
             except Exception:
                 stream_body = upstream_body
-            logger.info("Overriding upstream to stream=true for slot save", server_id=server_id)
+            logger.info(
+                "Overriding upstream to stream=true for slot save", server_id=server_id
+            )
 
             try:
                 response = await client.send(
@@ -632,7 +666,9 @@ async def proxy_request(request: Request, server_id: str, path: str):
                     stream=True,
                 )
             except httpx.HTTPError as exc:
-                logger.error("Upstream server %s error before response: %s", server_id, exc)
+                logger.error(
+                    "Upstream server %s error before response: %s", server_id, exc
+                )
                 await client.aclose()
                 server_cache.decrement_use(server_id)
                 raise
@@ -643,14 +679,35 @@ async def proxy_request(request: Request, server_id: str, path: str):
 
             # Save slot BEFORE closing the upstream connection — the slot
             # is still assigned while the connection is open.
+            # Use the SAME httpx client to reuse the TCP connection,
+            # which keeps the slot pinned in llama.cpp.
             num = _num_slots_cache.get(server_id, 1)
             actual_slot = await _find_used_slot(target_host, num)
             if actual_slot is None:
                 actual_slot = slot_id
             if session_id:
                 _session_slot_cache[session_id] = actual_slot
-            logger.info("Saving slot (non-streaming path)", slot_file=slot_file, slot_id=actual_slot)
-            await _save_slot(target_host, actual_slot, slot_file)
+            logger.info(
+                "Saving slot (non-streaming path)",
+                slot_file=slot_file,
+                slot_id=actual_slot,
+            )
+
+            # Send save on the same client connection to keep slot pinned
+            try:
+                save_resp = await client.post(
+                    f"{target_host}/slots/{actual_slot}?action=save",
+                    json={"filename": os.path.basename(slot_file)},
+                )
+                logger.info(
+                    "Slot save response (non-streaming)",
+                    slot_file=slot_file,
+                    slot_id=actual_slot,
+                    status=save_resp.status_code,
+                    body=save_resp.text[:200],
+                )
+            except Exception as e:
+                logger.warning("Slot save failed (non-streaming)", error=str(e))
             slot_saved = True
 
             await response.aclose()
@@ -709,9 +766,7 @@ async def proxy_request(request: Request, server_id: str, path: str):
         # Upstream llama.cpp crashed or disconnected mid-request
         # (e.g., OOM, segfault, or killed by the kernel).
         # Return 503 so the caller can retry on a different server.
-        logger.error(
-            "Upstream server %s disconnected: %s", server_id, exc
-        )
+        logger.error("Upstream server %s disconnected: %s", server_id, exc)
         raise HTTPException(
             status_code=503,
             detail=f"Upstream server {server_id} disconnected unexpectedly: {exc}",

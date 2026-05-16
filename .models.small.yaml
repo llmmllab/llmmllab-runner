@@ -37,6 +37,7 @@
     think: False
     kv_on_cpu: True
     parallel: 4
+    # slot_prompt_similarity: 0
     is_default: True
   pipeline: llama
   lora_weights: []

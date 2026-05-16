@@ -192,5 +192,15 @@ class ModelParameters(BaseModel):
         ),
     ] = 0.5
     """Minimum fraction of num_ctx that llama.cpp --fit is allowed to auto-reduce to (0.0-1.0). Default 0.5 means context can shrink to 50% of requested."""
+    slot_prompt_similarity: Annotated[
+        Optional[float],
+        Field(
+            default=None,
+            description="llama.cpp --slot-prompt-similarity threshold (0.0-1.0). Set to 0 to disable LCP slot matching; set to 1.0 to require exact match. None uses llama.cpp default (0.10).",
+            ge=0.0,
+            le=1.0,
+        ),
+    ] = None
+    """llama.cpp --slot-prompt-similarity threshold (0.0-1.0). Set to 0 to disable LCP slot matching."""
 
     model_config = ConfigDict(extra="ignore")

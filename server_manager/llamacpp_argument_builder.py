@@ -116,13 +116,14 @@ class LlamaCppArgumentBuilder:
                 "split_mode": params.split_mode or "layer",
                 "jinja": True,
                 "no_webui": True,
-                # Disable LCP prompt similarity matching so that `id_slot`
-                # assignments in the API body are not overridden by llama.cpp's
-                # internal slot-matching logic, which would defeat hash-based
-                # slot assignment required for session persistence.
-                # "slot_prompt_similarity": "0.25",
             }
         )
+
+        # Per-model slot prompt similarity override.
+        # Setting to 0 disables LCP-based slot matching, which is required
+        # for hash-based slot assignment in session persistence.
+        if params.slot_prompt_similarity is not None:
+            config["slot_prompt_similarity"] = str(params.slot_prompt_similarity)
 
         # Tensor split - only set if configured
         if params.tensor_split:
