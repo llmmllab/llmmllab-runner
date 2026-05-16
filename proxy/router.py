@@ -12,10 +12,12 @@ KV cache slot before forwarding and saves it after the response drains,
 enabling persistent conversation state across requests.
 """
 
+import asyncio
 import hashlib
 import json
 import os
-from typing import Dict
+import time
+from typing import Any, Dict, List, Optional
 
 import httpx
 from fastapi import APIRouter, HTTPException, Request
@@ -32,6 +34,69 @@ router = APIRouter()
 _num_slots_cache: Dict[str, int] = {}
 # session_id -> slot_id (discovered from first request response)
 _session_slot_cache: Dict[str, int] = {}
+
+
+def _sse_to_nonstreaming(
+    chunks: bytes, model: str
+) -> Optional[Dict[str, Any]]:
+    """Convert buffered SSE (stream=true) response to non-streaming JSON.
+
+    Parses ``data: {...}`` lines, concatenates content, and builds a
+    standard OpenAI non-streaming chat completion response.
+    """
+    text_parts: List[str] = []
+    finish_reason: Optional[str] = None
+    usage: Optional[Dict[str, Any]] = None
+
+    for line in chunks.decode(errors="replace").split("\n"):
+        line = line.strip()
+        if not line.startswith("data: "):
+            continue
+        payload = line[6:]
+        if payload == "[DONE]":
+            break
+        try:
+            obj = json.loads(payload)
+        except json.JSONDecodeError:
+            continue
+
+        choices = obj.get("choices") or []
+        for c in choices:
+            delta = c.get("delta") or {}
+            role = delta.get("role")
+            if role and not text_parts:
+                continue
+            content = delta.get("content", "")
+            if content:
+                text_parts.append(content)
+            fr = c.get("finish_reason")
+            if fr:
+                finish_reason = fr
+        if usage is None and "usage" in obj:
+            usage = obj["usage"]
+
+    if not text_parts and finish_reason is None:
+        return None
+
+    result: Dict[str, Any] = {
+        "id": f"chatcmpl-{int(time.time()*1000)}",
+        "object": "chat.completion",
+        "created": int(time.time()),
+        "model": model,
+        "choices": [
+            {
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": "".join(text_parts) if text_parts else "",
+                },
+                "finish_reason": finish_reason or "stop",
+            }
+        ],
+    }
+    if usage:
+        result["usage"] = usage
+    return result
 
 
 def _slot_file_path(session_id: str) -> str:
@@ -541,8 +606,83 @@ async def proxy_request(request: Request, server_id: str, path: str):
                 before_tokens=before_tokens if before_tokens else None,
             )
 
-        # Non-streaming: buffer entire response
+        # Non-streaming path
         logger.info("Taking non-streaming path", server_id=server_id, has_slot_file=bool(slot_file))
+
+        # If slot persistence is active, always stream upstream to keep the
+        # connection open (and the slot assigned) until we can save.  Then
+        # convert the SSE back to non-streaming JSON for the client.
+        if slot_file and is_chat_completion:
+            try:
+                body_dict = json.loads(upstream_body)
+                body_dict["stream"] = True
+                stream_body = json.dumps(body_dict)
+            except Exception:
+                stream_body = upstream_body
+
+            try:
+                response = await client.send(
+                    client.build_request(
+                        method=method,
+                        url=upstream_url,
+                        headers=headers,
+                        content=stream_body,
+                    ),
+                    stream=True,
+                )
+            except httpx.HTTPError as exc:
+                logger.error("Upstream server %s error before response: %s", server_id, exc)
+                await client.aclose()
+                server_cache.decrement_use(server_id)
+                raise
+
+            resp_content = b""
+            async for chunk in response.aiter_bytes():
+                resp_content += chunk
+
+            # Save slot BEFORE closing the upstream connection — the slot
+            # is still assigned while the connection is open.
+            num = _num_slots_cache.get(server_id, 1)
+            actual_slot = await _find_used_slot(target_host, num)
+            if actual_slot is None:
+                actual_slot = slot_id
+            if session_id:
+                _session_slot_cache[session_id] = actual_slot
+            logger.info("Saving slot (non-streaming path)", slot_file=slot_file, slot_id=actual_slot)
+            await _save_slot(target_host, actual_slot, slot_file)
+            slot_saved = True
+
+            await response.aclose()
+            await client.aclose()
+            server_cache.decrement_use(server_id)
+
+            # Convert SSE back to non-streaming JSON
+            model_name = ""
+            try:
+                body_dict = json.loads(body)
+                model_name = body_dict.get("model", "")
+            except Exception:
+                pass
+            result = _sse_to_nonstreaming(resp_content, model_name)
+            if result:
+                return Response(
+                    content=json.dumps(result),
+                    status_code=200,
+                    media_type="application/json",
+                )
+
+            # Fallback: return raw upstream response if conversion fails
+            return Response(
+                content=resp_content,
+                status_code=response.status_code,
+                headers={
+                    k: v
+                    for k, v in dict(response.headers).items()
+                    if k.lower() not in ("transfer-encoding", "content-length")
+                },
+            )
+
+        # No slot persistence — straightforward non-streaming proxy
         async with client:
             async with client.stream(
                 method=method,
@@ -553,18 +693,6 @@ async def proxy_request(request: Request, server_id: str, path: str):
                 resp_content = b""
                 async for chunk in response.aiter_bytes():
                     resp_content += chunk
-
-                # Save KV cache slot - discover actual slot from /slots
-                if slot_file:
-                    num = _num_slots_cache.get(server_id, 1)
-                    actual_slot = await _find_used_slot(target_host, num)
-                    if actual_slot is None:
-                        actual_slot = slot_id
-                    if session_id:
-                        _session_slot_cache[session_id] = actual_slot
-                    logger.info("Saving slot (non-streaming path)", slot_file=slot_file, slot_id=actual_slot)
-                    await _save_slot(target_host, actual_slot, slot_file)
-                    slot_saved = True
 
                 return Response(
                     content=resp_content,
