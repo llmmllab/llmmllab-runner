@@ -279,16 +279,17 @@ async def _stream_upstream(
         if k.lower() not in ("transfer-encoding", "content-length")
     }
 
-    # Track which slot llama.cpp actually used, discovered on first chunk
-    actual_slot_id = []
+     # Track which slot llama.cpp actually used, discovered on first chunk
+    actual_slot_id = None
 
     async def upstream_iterator():
+        nonlocal actual_slot_id
         try:
             async for chunk in response.aiter_bytes():
                 # Discover the actual slot on the first chunk by diffing
                 # slot token counts against the pre-request baseline.
-                if before_tokens and actual_slot_id[0] is None:
-                    actual_slot_id[0] = await _find_used_slot(
+                if before_tokens and actual_slot_id is None:
+                    actual_slot_id = await _find_used_slot(
                         target_host,
                         _num_slots_cache.get(server_id, 1),
                         before_tokens,
@@ -301,13 +302,13 @@ async def _stream_upstream(
             # and the save would get nothing or a 404.  Use a short timeout
             # so a hung save doesn't stall the response.
             if slot_file and target_host:
-                if actual_slot_id[0] is None:
-                    actual_slot_id[0] = slot_id
+                if actual_slot_id is None:
+                    actual_slot_id = slot_id
                 if session_id:
-                    _session_slot_cache[session_id] = actual_slot_id[0]
+                    _session_slot_cache[session_id] = actual_slot_id
                 try:
                     await asyncio.wait_for(
-                        _save_slot(target_host, actual_slot_id[0], slot_file),
+                        _save_slot(target_host, actual_slot_id, slot_file),
                         timeout=5.0,
                     )
                 except asyncio.TimeoutError:

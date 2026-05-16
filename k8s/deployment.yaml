@@ -102,8 +102,8 @@ spec:
               value: "http://tempo.llmmllab.svc.cluster.local:4317"
             - name: DCGM_METRICS_ENABLED
               value: "true"
-            # - name: SLOT_SAVE_DIR
-            # value: "/slots"
+            - name: SLOT_SAVE_DIR
+              value: "/slots"
         # DCGM exporter disabled - entrypoint script missing in image
         # - name: dcgm-exporter
         #   image: nvcr.io/nvidia/k8s/dcgm-exporter:2.3.2-2.6.2-ubuntu20.04
