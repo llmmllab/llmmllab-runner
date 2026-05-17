@@ -13,3 +13,4 @@ build/
 !.models.example.yaml
 !.models.small.yaml
 !.models.yaml
+.playwright*

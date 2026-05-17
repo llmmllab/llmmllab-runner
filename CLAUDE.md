@@ -53,6 +53,8 @@ All commands use `uv` (managed via Makefile). The project requires a `.env` file
 - `llmmllab-runner` (main): 3 GPUs, node `lsnode-3`, 8Gi/16Gi memory
 - `llmmllab-runner-small`: 1 GPU, node `lsnode-4`, 4Gi/8Gi memory
 - Both use `Recreate` strategy (no overlapping deployments) and privileged security context for GPU access
+- Both mount hostPath volumes: `/models` (read-only) and `/slots` (read-write for KV cache persistence)
+- `SLOT_SAVE_DIR=/slots` is set on both deployments
 
 ### Important Implementation Details
 
@@ -60,3 +62,28 @@ All commands use `uv` (managed via Makefile). The project requires a `.env` file
 - For SSE requests, the upstream connection is closed via `response.aclose()` when the client disconnects, which signals llama.cpp to stop generating
 - `BaseServerManager` finds available ports by binding to 127.0.0.1 (intentionally without SO_REUSEADDR to avoid TIME_WAIT collisions)
 - Dockerfile is multi-stage: stage 1 compiles llama.cpp from source with CUDA, stage 2 is a runtime-only image with `uv` for dependency management
+
+### Slot Persistence (KV Cache)
+
+When `SLOT_SAVE_DIR` is set, the proxy router (`proxy/router.py`) automatically saves and restores KV cache slots for chat completions with an `X-Session-ID` header:
+
+- **Slot restore** happens before forwarding the request to llama.cpp
+- **Slot save** happens in the `finally` block of `upstream_iterator()` (streaming) or after buffering the response (non-streaming), before closing the upstream connection
+- **Session-to-slot mapping**: `md5(session_id) % num_slots` — stateless and deterministic
+- **Actual slot discovery**: The runner diffs slot token counts before/after each request to find which slot llama.cpp used, since llama.cpp doesn't report it in the response. The mapping is cached per session.
+- **Non-streaming requests** are internally proxied as streaming to keep the slot pinned during save, then converted back to JSON
+- **Slot cleanup**: A background task in `app.py` periodically deletes old slot files based on `SLOT_CLEANUP_MAX_AGE_MIN` and `SLOT_CLEANUP_MAX_SIZE_MB`
+- Slot errors must never break the main request flow — all wrapped in try/except
+
+### Session ID Middleware
+
+- `SessionIdMiddleware` in `app.py` extracts `X-Session-ID` header into `_session_id_ctx` context variable
+- Session ID flows through structlog entries automatically via `_add_session_id_to_logs` processor
+- Accessible in proxy router via `_session_id_ctx.get()`
+
+### Logging Infrastructure
+
+- Loki is exposed through the gateway load balancer at `http://192.168.0.71:3100`
+- Query API: `http://192.168.0.71:3100/loki/api/v1/query_range`
+- Use `{namespace="llmmllab"}` selector for runner logs
+- Logs are stored on a PVC so they survive pod restarts

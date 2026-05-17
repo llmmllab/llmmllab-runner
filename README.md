@@ -177,23 +177,49 @@ Returns GPU stats, active server count, and loaded models.
 |--------|------|-------------|
 | `*` | `/v1/server/{server_id}/{path}` | Forward any request to the upstream llama.cpp server |
 
-### Slot Persistence
+### Slot Persistence (KV Cache)
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `POST` | `/v1/server/{server_id}/slots/{slot_id}/save` | Save KV cache slot to disk for session persistence |
-| `POST` | `/v1/server/{server_id}/slots/{slot_id}/restore` | Restore KV cache slot from disk for session resumption |
+| `POST` | `/v1/server/{server_id}/slots/{slot_id}/save` | Save KV cache slot to disk |
+| `POST` | `/v1/server/{server_id}/slots/{slot_id}/restore` | Restore KV cache slot from disk |
 
-Slot persistence eliminates redundant prefill computation by saving the conversation's KV cache to disk between sessions. When enabled (`SLOT_SAVE_DIR` is set), llama-server is launched with `--slot-save-path`, `--no-mmap`, and `--swa-full` flags.
+Slot persistence eliminates redundant prefill computation by saving a conversation's KV cache to disk between requests. When enabled, the runner **automatically** restores and saves slots on every chat completion — no manual save/restore calls are needed.
 
-**Workflow:**
+**How it works:**
 
-1. Set `SLOT_SAVE_DIR=/data/slots` (or any writable directory)
-2. After a chat completion, call `POST /v1/server/{server_id}/slots/0/save` to persist the slot
-3. On the next session, call `POST /v1/server/{server_id}/slots/0/restore` before sending the next message
-4. The restored slot skips re-processing the full prompt history, reducing latency from seconds to milliseconds
+1. Set `SLOT_SAVE_DIR` to a writable directory (e.g. `/slots`)
+2. Send chat completion requests with an `X-Session-ID` header
+3. The runner automatically restores the slot before forwarding and saves it after the response completes
+4. Subsequent requests with the same session ID resume from the saved KV cache, skipping prompt reprocessing
 
-Each slot file is named by slot index and lives under `SLOT_SAVE_DIR`. File sizes range from ~1 GB to ~4.4 GB depending on context length.
+**Key details:**
+
+- **Session-to-slot mapping**: The runner hashes the `X-Session-ID` to assign a consistent slot index (`md5(session_id) % num_slots`). With `parallel: 4`, up to 4 concurrent sessions per server can each maintain separate KV caches.
+- **Slot file naming**: Files are named `slot_{session_id}.bin` under `SLOT_SAVE_DIR`
+- **Auto-discovery**: The runner queries the upstream `/slots` endpoint to discover the number of available slots and caches the result per server
+- **Actual slot tracking**: Since llama.cpp doesn't report which slot it used in the response, the runner compares token counts before and after each request to identify the actual slot. The mapping is cached per session for subsequent requests.
+- **Non-streaming requests**: Even non-streaming chat completions are internally proxied as streaming to keep the slot pinned during the save operation, then converted back to JSON for the client.
+
+**Manual save/restore API:**
+
+For direct control, the proxy exposes explicit save/restore endpoints. Send a JSON body with `{"filename": "slot_name.bin"}`:
+
+```bash
+# Save slot 0
+curl -X POST http://localhost:9000/v1/server/{server_id}/slots/0/save \
+  -H "Content-Type: application/json" \
+  -d '{"filename": "my_session.bin"}'
+
+# Restore slot 0
+curl -X POST http://localhost:9000/v1/server/{server_id}/slots/0/restore \
+  -H "Content-Type: application/json" \
+  -d '{"filename": "my_session.bin"}'
+```
+
+**Slot file cleanup:**
+
+Slot files grow with conversation length. The runner includes a background cleanup task that enforces age and size limits. Configure with `SLOT_CLEANUP_MAX_AGE_MIN`, `SLOT_CLEANUP_MAX_SIZE_MB`, and `SLOT_CLEANUP_INTERVAL_SEC`. See [Configuration](#configuration) for details.
 
 ### System
 
@@ -218,9 +244,12 @@ All configuration is environment-variable-driven via `.env`:
 | `SERVER_PORT_RANGE_END` | `8900` | End of dynamic port range |
 | `PROXY_TIMEOUT` | `600` | Upstream proxy timeout in seconds |
 | `GPU_POWER_CAP_PCT` | `85` | GPU power cap as % of default TDP (0 to disable) |
-| `SLOT_SAVE_DIR` | (empty) | Directory for persistent KV cache slots. When set, passes `--slot-save-path` to llama-server, enabling session state persistence via the slot save/restore API. See [Slot Persistence](#slot-persistence) below. |
+| `SLOT_SAVE_DIR` | (empty) | Directory for persistent KV cache slots. When set, passes `--slot-save-path` to llama-server. Enables automatic slot save/restore on chat completions with `X-Session-ID` header. See [Slot Persistence](#slot-persistence-kv-cache) below. |
 | `SLOT_NO_MMAP` | `true` | Pass `--no-mmap` when `SLOT_SAVE_DIR` is set. Prevents OS from evicting mmap pages between save/restore. |
 | `SLOT_SWA_FULL` | `true` | Pass `--swa-full` when `SLOT_SAVE_DIR` is set. Required for SWA models (e.g. Qwen 3.5) to correctly persist their KV cache. |
+| `SLOT_CLEANUP_MAX_AGE_MIN` | `1440` | Delete slot files older than this many minutes. Set to `0` to disable. |
+| `SLOT_CLEANUP_MAX_SIZE_MB` | `5000` | Maximum total size of slot directory in MB. Oldest files are deleted when exceeded. Set to `0` to disable. |
+| `SLOT_CLEANUP_INTERVAL_SEC` | `300` | How often the slot cleanup task runs. |
 
 ## Model Configuration
 
@@ -323,6 +352,17 @@ RUNNER_DEPLOY=small make k8s-restart
 
 Both use `Recreate` strategy to prevent overlapping instances on the same node.
 
+### Persistent Volumes
+
+Both deployments mount hostPath volumes for slot persistence:
+
+| Volume | Host Path | Container Mount | Purpose |
+|--------|-----------|-----------------|---------|
+| `models` | `/models` | `/models` (read-only) | Model GGUF files |
+| `slots` | `/slots` | `/slots` (read-write) | KV cache slot files |
+
+The `SLOT_SAVE_DIR` environment variable is set to `/slots` on both deployments. Slot files persist across pod restarts and are cleaned up automatically by the background cleanup task. Ensure the host directories exist on the target nodes (`lsnode-3` and `lsnode-4`).
+
 ## Development
 
 ### Project Structure
@@ -420,6 +460,8 @@ Returns per-GPU memory usage, active server list with ports and use counts, and 
 - **SSE streaming** — The proxy detects streaming requests by checking the `stream` field in the JSON body. If the client disconnects, `response.aclose()` closes the upstream TCP connection, which aborts llama.cpp generation.
 - **Port allocation** — `BaseServerManager._find_available_port()` binds to 127.0.0.1 without `SO_REUSEADDR` to avoid TIME_WAIT collisions. Ports are allocated sequentially from 8001.
 - **VRAM eviction** — When a new model is requested and VRAM is insufficient, the soft eviction path stops idle servers oldest-first until enough memory is free. The model size estimate is `details.size + 128MB` overhead.
+- **Slot persistence** — The proxy router in `proxy/router.py` automatically handles slot save/restore for chat completions with an `X-Session-ID` header. Slot save happens in the `finally` block of `upstream_iterator()` (streaming) or after buffering the response (non-streaming), before closing the upstream connection. The `actual_slot_id` is discovered by diffing slot token counts before/after the request. Slot errors must never break the main request flow — all operations are wrapped in try/except.
+- **Session ID middleware** — `SessionIdMiddleware` in `app.py` extracts the `X-Session-ID` header into a context variable (`_session_id_ctx`), making it available throughout the request lifecycle, including in structlog entries.
 
 ## License
 

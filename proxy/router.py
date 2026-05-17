@@ -297,23 +297,39 @@ async def _stream_upstream(
                 yield chunk
         finally:
             # Save KV cache slot BEFORE closing the upstream connection.
-            # The slot still holds its KV cache data while the connection
-            # is open.  Once aclose() fires, llama.cpp may free the slot
-            # and the save would get nothing or a 404.  Use a short timeout
-            # so a hung save doesn't stall the response.
+            # Use the SAME httpx client to reuse the TCP connection, which
+            # keeps the slot pinned in llama.cpp while we save.  Once
+            # aclose() fires, llama.cpp may free the slot and the save
+            # would get nothing or a 404.
             if slot_file and target_host:
                 if actual_slot_id is None:
                     actual_slot_id = slot_id
                 if session_id:
                     _session_slot_cache[session_id] = actual_slot_id
+                logger.info(
+                    "Attempting slot save (streaming)",
+                    slot_file=slot_file,
+                    slot_id=actual_slot_id,
+                    target_host=target_host,
+                )
                 try:
-                    await asyncio.wait_for(
-                        _save_slot(target_host, actual_slot_id, slot_file),
-                        timeout=5.0,
+                    save_resp = await asyncio.wait_for(
+                        client.post(
+                            f"{target_host}/slots/{actual_slot_id}?action=save",
+                            json={"filename": os.path.basename(slot_file)},
+                        ),
+                        timeout=30.0,
+                    )
+                    logger.info(
+                        "Slot save response (streaming)",
+                        slot_file=slot_file,
+                        slot_id=actual_slot_id,
+                        status=save_resp.status_code,
+                        body=save_resp.text[:200],
                     )
                 except asyncio.TimeoutError:
                     logger.warning(
-                        "Slot save timed out (5s), skipping", slot_file=slot_file
+                        "Slot save timed out (30s), skipping", slot_file=slot_file
                     )
                 except asyncio.CancelledError:
                     raise
@@ -547,12 +563,15 @@ async def proxy_request(request: Request, server_id: str, path: str):
         body = await request.body()
 
         # Inject id_slot for slot persistence.
+        # Always assign the hash-based slot_id from the first request to
+        # prevent multiple sessions from colliding on slot 0.  Once the
+        # actual slot used by llama.cpp is discovered (via token diff),
+        # the cached mapping overrides for subsequent requests.
         upstream_body = body
         if slot_file and is_chat_completion and body:
             try:
                 body_dict = json.loads(body)
-                if session_id in _session_slot_cache:
-                    body_dict["id_slot"] = _session_slot_cache[session_id]
+                body_dict["id_slot"] = _session_slot_cache.get(session_id, slot_id)
                 upstream_body = json.dumps(body_dict)
             except Exception:
                 pass
