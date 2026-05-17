@@ -98,7 +98,7 @@ class LlamaCppArgumentBuilder:
                 "ctx_size": params.num_ctx or 90000,
                 "batch_size": params.batch_size or 2048,
                 "ubatch_size": params.micro_batch_size or (params.batch_size or 2048),
-                "ctx_checkpoints": 24,
+                "ctx_checkpoints": 32,
                 "timeout": 600,
                 "context_shift": True,
                 "mirostat": 1,

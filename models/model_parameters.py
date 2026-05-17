@@ -220,5 +220,13 @@ class ModelParameters(BaseModel):
         ),
     ] = 3
     """Number of draft tokens for MTP speculative decoding."""
+    kv_unified: Annotated[
+        Optional[bool],
+        Field(
+            default=True,
+            description="Use unified key-value cache format (llama.cpp --kv-unified) for improved performance and compatibility with future features. Requires llama.cpp v1.3.0 or later.",
+        ),
+    ] = True
+    """Use unified key-value cache format for improved performance and future compatibility."""
 
     model_config = ConfigDict(extra="ignore")
