@@ -202,5 +202,23 @@ class ModelParameters(BaseModel):
         ),
     ] = None
     """llama.cpp --slot-prompt-similarity threshold (0.0-1.0). Set to 0 to disable LCP slot matching."""
+    spec_type_mtp: Annotated[
+        Optional[bool],
+        Field(
+            default=False,
+            description="Enable MTP (Multi-Token Prediction) speculative decoding. Passes --spec-type draft-mtp to llama-server.",
+        ),
+    ] = False
+    """Enable MTP speculative decoding for ~2x token generation speedup."""
+    spec_draft_n_max: Annotated[
+        Optional[int],
+        Field(
+            default=3,
+            description="Number of draft tokens for MTP speculative decoding (llama.cpp --spec-draft-n-max).",
+            ge=1,
+            le=16,
+        ),
+    ] = 3
+    """Number of draft tokens for MTP speculative decoding."""
 
     model_config = ConfigDict(extra="ignore")

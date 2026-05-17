@@ -160,6 +160,15 @@ class LlamaCppArgumentBuilder:
                 if draft_gguf:
                     config["model_draft"] = str(draft_gguf)
 
+        # MTP (Multi-Token Prediction) speculative decoding
+        if params.spec_type_mtp:
+            config["spec_type"] = "draft-mtp"
+            config["spec_draft_n_max"] = params.spec_draft_n_max or 3
+            logger.info(
+                f"MTP speculative decoding enabled: "
+                f"spec_draft_n_max={params.spec_draft_n_max or 3}"
+            )
+
         # Reasoning (thinking) support
         if params.think:
             config["reasoning"] = "on"

@@ -16,6 +16,7 @@ from config import (
     SLOT_CLEANUP_MAX_AGE_MIN,
     SLOT_CLEANUP_MAX_SIZE_MB,
     SLOT_CLEANUP_INTERVAL_SEC,
+    SLOT_INACTIVE_MAX_AGE_MIN,
 )
 from cache import ServerCache
 from routers import models as models_router
@@ -109,10 +110,44 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                 slot_files = glob_mod.glob(f"{SLOT_SAVE_DIR}/*.bin")
                 now = time_mod.time()
                 max_age_sec = SLOT_CLEANUP_MAX_AGE_MIN * 60
+                inactive_sec = SLOT_INACTIVE_MAX_AGE_MIN * 60
                 deleted = 0
                 total_freed = 0
 
-                # Delete files older than SLOT_CLEANUP_MAX_AGE_MIN
+                # Import session activity tracker from proxy router
+                from proxy.router import get_session_activity
+
+                # Delete slot files for inactive sessions.
+                # For tracked sessions, use the proxy's activity timestamp.
+                # For untracked (orphaned) sessions, fall back to file mtime.
+                if inactive_sec > 0:
+                    for filepath in sorted(slot_files):
+                        try:
+                            # Extract session_id from filename: slot_{session_id}.bin
+                            basename = os.path.basename(filepath)
+                            if not basename.startswith("slot_") or not basename.endswith(
+                                ".bin"
+                            ):
+                                continue
+                            session_id = basename[5:-4]
+                            last_active = get_session_activity(session_id)
+
+                            # Use session activity if available, else file mtime
+                            if last_active is not None:
+                                idle_since = last_active
+                            else:
+                                idle_since = os.path.getmtime(filepath)
+
+                            if now - idle_since > inactive_sec:
+                                size = os.path.getsize(filepath)
+                                os.remove(filepath)
+                                deleted += 1
+                                total_freed += size
+                        except OSError:
+                            pass
+
+                # Absolute floor: delete any file older than SLOT_CLEANUP_MAX_AGE_MIN
+                # regardless of session activity (catches orphaned files)
                 if max_age_sec > 0:
                     for filepath in sorted(slot_files):
                         try:

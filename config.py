@@ -86,7 +86,7 @@ SLOT_SWA_FULL = os.environ.get("SLOT_SWA_FULL", "true").lower() in (
 
 # Slot file cleanup: delete slot files older than this many minutes.
 # Only active when SLOT_SAVE_DIR is set. Set to 0 to disable cleanup.
-SLOT_CLEANUP_MAX_AGE_MIN = int(os.environ.get("SLOT_CLEANUP_MAX_AGE_MIN", "1440"))
+SLOT_CLEANUP_MAX_AGE_MIN = int(os.environ.get("SLOT_CLEANUP_MAX_AGE_MIN", "12"))
 
 # Slot file cleanup: maximum total size of /slots directory in MB.
 # When exceeded, oldest files are deleted until under the limit.
@@ -95,3 +95,10 @@ SLOT_CLEANUP_MAX_SIZE_MB = int(os.environ.get("SLOT_CLEANUP_MAX_SIZE_MB", "5000"
 
 # How often (seconds) the slot cleanup task runs.
 SLOT_CLEANUP_INTERVAL_SEC = int(os.environ.get("SLOT_CLEANUP_INTERVAL_SEC", "300"))
+
+# Slot file cleanup: only delete slot files for sessions that haven't had a
+# turn in this many minutes.  Unlike SLOT_CLEANUP_MAX_AGE_MIN (which uses
+# file mtime), this looks at the proxy's session-activity tracker so that
+# slot files for sessions that are still "alive" but idle between turns
+# aren't prematurely deleted.  Set to 0 to disable (fall back to mtime).
+SLOT_INACTIVE_MAX_AGE_MIN = int(os.environ.get("SLOT_INACTIVE_MAX_AGE_MIN", "12"))

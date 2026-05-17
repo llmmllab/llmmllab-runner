@@ -219,7 +219,13 @@ curl -X POST http://localhost:9000/v1/server/{server_id}/slots/0/restore \
 
 **Slot file cleanup:**
 
-Slot files grow with conversation length. The runner includes a background cleanup task that enforces age and size limits. Configure with `SLOT_CLEANUP_MAX_AGE_MIN`, `SLOT_CLEANUP_MAX_SIZE_MB`, and `SLOT_CLEANUP_INTERVAL_SEC`. See [Configuration](#configuration) for details.
+Slot files grow with conversation length. The runner includes a background cleanup task with three enforcement layers:
+
+1. **Session inactivity** (`SLOT_INACTIVE_MAX_AGE_MIN`, default 12 min): The proxy tracks when each session last had a turn. Slot files for sessions idle longer than this are deleted. Untracked (orphaned) sessions fall back to file mtime.
+2. **Absolute age floor** (`SLOT_CLEANUP_MAX_AGE_MIN`, default 12 min): Any slot file older than this is deleted, regardless of session activity. Catches orphaned files where the session wasn't tracked by the proxy.
+3. **Size cap** (`SLOT_CLEANUP_MAX_SIZE_MB`, default 5000 MB): Oldest files are trimmed when the directory exceeds this limit.
+
+See [Configuration](#configuration) for details.
 
 ### System
 
@@ -247,7 +253,8 @@ All configuration is environment-variable-driven via `.env`:
 | `SLOT_SAVE_DIR` | (empty) | Directory for persistent KV cache slots. When set, passes `--slot-save-path` to llama-server. Enables automatic slot save/restore on chat completions with `X-Session-ID` header. See [Slot Persistence](#slot-persistence-kv-cache) below. |
 | `SLOT_NO_MMAP` | `true` | Pass `--no-mmap` when `SLOT_SAVE_DIR` is set. Prevents OS from evicting mmap pages between save/restore. |
 | `SLOT_SWA_FULL` | `true` | Pass `--swa-full` when `SLOT_SAVE_DIR` is set. Required for SWA models (e.g. Qwen 3.5) to correctly persist their KV cache. |
-| `SLOT_CLEANUP_MAX_AGE_MIN` | `1440` | Delete slot files older than this many minutes. Set to `0` to disable. |
+| `SLOT_INACTIVE_MAX_AGE_MIN` | `12` | Delete slot files for sessions inactive for this many minutes. Uses the proxy's session-activity tracker. Set to `0` to disable. |
+| `SLOT_CLEANUP_MAX_AGE_MIN` | `12` | Absolute age floor: delete any slot file older than this many minutes, regardless of session activity. Catches orphaned files. Set to `0` to disable. |
 | `SLOT_CLEANUP_MAX_SIZE_MB` | `5000` | Maximum total size of slot directory in MB. Oldest files are deleted when exceeded. Set to `0` to disable. |
 | `SLOT_CLEANUP_INTERVAL_SEC` | `300` | How often the slot cleanup task runs. |
 

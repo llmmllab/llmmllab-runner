@@ -72,7 +72,7 @@ When `SLOT_SAVE_DIR` is set, the proxy router (`proxy/router.py`) automatically 
 - **Session-to-slot mapping**: `md5(session_id) % num_slots` — stateless and deterministic
 - **Actual slot discovery**: The runner diffs slot token counts before/after each request to find which slot llama.cpp used, since llama.cpp doesn't report it in the response. The mapping is cached per session.
 - **Non-streaming requests** are internally proxied as streaming to keep the slot pinned during save, then converted back to JSON
-- **Slot cleanup**: A background task in `app.py` periodically deletes old slot files based on `SLOT_CLEANUP_MAX_AGE_MIN` and `SLOT_CLEANUP_MAX_SIZE_MB`
+- **Slot cleanup**: A background task in `app.py` periodically deletes old slot files using a session-aware approach: `SLOT_INACTIVE_MAX_AGE_MIN` (default 12 min) checks the proxy's session-activity tracker; `SLOT_CLEANUP_MAX_AGE_MIN` (default 12 min) is an absolute floor for orphaned files; `SLOT_CLEANUP_MAX_SIZE_MB` (default 5000 MB) enforces a directory size cap
 - Slot errors must never break the main request flow — all wrapped in try/except
 
 ### Session ID Middleware

@@ -34,6 +34,18 @@ router = APIRouter()
 _num_slots_cache: Dict[str, int] = {}
 # session_id -> slot_id (discovered from first request response)
 _session_slot_cache: Dict[str, int] = {}
+# session_id -> last activity timestamp (for session-aware slot cleanup)
+_session_activity: Dict[str, float] = {}
+
+
+def touch_session_activity(session_id: str) -> None:
+    """Record that a session had a turn, updating the activity timestamp."""
+    _session_activity[session_id] = time.time()
+
+
+def get_session_activity(session_id: str) -> Optional[float]:
+    """Get the last activity timestamp for a session, or None if unknown."""
+    return _session_activity.get(session_id)
 
 
 def _sse_to_nonstreaming(chunks: bytes, model: str) -> Optional[Dict[str, Any]]:
@@ -469,6 +481,8 @@ async def proxy_request(request: Request, server_id: str, path: str):
         num_slots = await _discover_num_slots(target_host, server_id)
         slot_id = _resolve_slot_id(session_id, server_id, num_slots)
         slot_file = _slot_file_path(session_id)
+        # Track session activity for cleanup decisions
+        touch_session_activity(session_id)
         logger.info(
             "Slot persistence enabled",
             session_id=session_id,
