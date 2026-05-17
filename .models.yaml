@@ -93,9 +93,12 @@
     # n_cpu_moe: 10
     # ctx_size_reduction_limit: 1.0
     # slot_prompt_similarity: 0
-    parallel: 4
+    # MTP requires parallel=1 (llama.cpp limitation until parallel drafting support lands)
+    # parallel: 1
     is_default: True
     split_mode: "row"
+    spec_type_mtp: true
+    spec_draft_n_max: 3
   pipeline: llama
   lora_weights: []
   provider: llama_cpp
