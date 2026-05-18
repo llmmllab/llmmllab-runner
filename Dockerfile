@@ -18,7 +18,7 @@ ENV CUDA_HOME=/usr/local/cuda \
 
 RUN ln -sf /usr/local/cuda/lib64/stubs/libcuda.so /usr/local/cuda/lib64/stubs/libcuda.so.1
 
-ARG LLAMA_CPP_TAG=b9190
+ARG LLAMA_CPP_TAG=b9209
 RUN git clone https://github.com/ggml-org/llama.cpp.git /llama.cpp \
     && cd /llama.cpp \
     && git checkout tags/${LLAMA_CPP_TAG} -b llmmll

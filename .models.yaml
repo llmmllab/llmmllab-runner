@@ -70,7 +70,7 @@
     size: 26015429760
     original_ctx: 2048
   parameters:
-    num_ctx: 200000
+    num_ctx: 400000
     repeat_last_n: 128
     repeat_penalty: 0.5
     temperature: 0.7
@@ -88,17 +88,17 @@
     reasoning_budget: 8192
     kv_on_cpu: False
     # tensor_split: "0,1,1"
-    main_gpu: 2
+    main_gpu: 1
     # n_cpu_moe: 10
     # ctx_size_reduction_limit: 1.0
     # slot_prompt_similarity: 0
     # MTP requires parallel=1 (llama.cpp limitation until parallel drafting support lands)
-    parallel: 4
+    parallel: 2
     is_default: True
     split_mode: "row"
     spec_type_mtp: true
-    spec_draft_n_max: 8
-    kv_unified: True
+    spec_draft_n_max: 4
+    kv_unified: False
   pipeline: llama
   lora_weights: []
   provider: llama_cpp
