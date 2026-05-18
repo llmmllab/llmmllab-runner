@@ -97,7 +97,7 @@
     is_default: True
     split_mode: "row"
     spec_type_mtp: true
-    spec_draft_n_max: 16
+    spec_draft_n_max: 8
     kv_unified: True
   pipeline: llama
   lora_weights: []
