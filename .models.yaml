@@ -44,7 +44,6 @@
     # ctx_size_reduction_limit: 1.0
     # slot_prompt_similarity: 0
     parallel: 4
-    is_default: True
     split_mode: "row"
   pipeline: llama
   lora_weights: []
@@ -71,7 +70,7 @@
     size: 26015429760
     original_ctx: 2048
   parameters:
-    num_ctx: 400000
+    num_ctx: 200000
     repeat_last_n: 128
     repeat_penalty: 0.5
     temperature: 0.7
@@ -94,12 +93,12 @@
     # ctx_size_reduction_limit: 1.0
     # slot_prompt_similarity: 0
     # MTP requires parallel=1 (llama.cpp limitation until parallel drafting support lands)
-    parallel: 2
+    parallel: 4
     is_default: True
     split_mode: "row"
     spec_type_mtp: true
-    spec_draft_n_max: 3
-    kv_unified: False
+    spec_draft_n_max: 16
+    kv_unified: True
   pipeline: llama
   lora_weights: []
   provider: llama_cpp
