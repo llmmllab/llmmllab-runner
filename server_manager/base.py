@@ -34,7 +34,6 @@ class BaseServerManager(ABC):
         self._logger = llmmllogger.bind(
             component=self.__class__.__name__,
             model=model.name,
-            session=session_id or "N/A",
         )
         self.process: Optional[subprocess.Popen] = None
         self.port: int = port or self._find_available_port()
