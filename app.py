@@ -123,13 +123,20 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                 if inactive_sec > 0:
                     for filepath in sorted(slot_files):
                         try:
-                            # Extract session_id from filename: slot_{session_id}.bin
+                            # Extract session_id from filename:
+                            # slot_{session_id}.bin (legacy) or
+                            # slot_{session_id}_{server_id}.bin (model-specific)
                             basename = os.path.basename(filepath)
                             if not basename.startswith("slot_") or not basename.endswith(
                                 ".bin"
                             ):
                                 continue
-                            session_id = basename[5:-4]
+                            name_part = basename[5:-4]  # strip "slot_" and ".bin"
+                            # If server_id is embedded, strip it to get session_id
+                            # Server IDs are UUIDs appended after the last underscore
+                            # but session_ids can also contain underscores, so we use
+                            # get_session_activity to check validity.
+                            session_id = name_part
                             last_active = get_session_activity(session_id)
 
                             # Use session activity if available, else file mtime

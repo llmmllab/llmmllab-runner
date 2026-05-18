@@ -109,8 +109,14 @@ def _sse_to_nonstreaming(chunks: bytes, model: str) -> Optional[Dict[str, Any]]:
     return result
 
 
-def _slot_file_path(session_id: str) -> str:
-    """Build the absolute path for a session's slot cache file."""
+def _slot_file_path(session_id: str, server_id: str = "") -> str:
+    """Build the absolute path for a session's slot cache file.
+
+    Includes server_id to prevent cross-model restore failures when a
+    session switches models (different layer counts produce incompatible files).
+    """
+    if server_id:
+        return f"{SLOT_SAVE_DIR}/slot_{session_id}_{server_id}.bin"
     return f"{SLOT_SAVE_DIR}/slot_{session_id}.bin"
 
 
@@ -127,6 +133,7 @@ async def _restore_slot(target_host: str, slot_id: int, slot_file: str) -> bool:
 
     Returns True if the slot was successfully restored, False otherwise.
     Silently skips if the slot file doesn't exist (first request for session).
+    Deletes the slot file on failure (e.g. model mismatch) to prevent repeated errors.
     """
     if not os.path.exists(slot_file):
         logger.debug("Slot file does not exist, skipping restore", slot_file=slot_file)
@@ -144,7 +151,22 @@ async def _restore_slot(target_host: str, slot_id: int, slot_file: str) -> bool:
                 status=resp.status_code,
                 body=resp.text[:200],
             )
-            return resp.status_code == 200
+            if resp.status_code == 200:
+                return True
+            # Restore failed (e.g. layer count mismatch, corrupt file) — delete
+            # the stale file so subsequent requests don't hit the same error.
+            logger.warning(
+                "Slot restore failed — deleting stale slot file",
+                slot_file=slot_file,
+                slot_id=slot_id,
+                status=resp.status_code,
+                body=resp.text[:200],
+            )
+            try:
+                os.remove(slot_file)
+            except OSError:
+                pass
+            return False
     except Exception as e:
         logger.warning(
             "Slot restore failed", slot_file=slot_file, slot_id=slot_id, error=str(e)
@@ -161,7 +183,7 @@ async def _save_slot(target_host: str, slot_id: int, slot_file: str) -> None:
         slot_file=slot_file,
     )
     try:
-        async with httpx.AsyncClient(timeout=4.0) as client:
+        async with httpx.AsyncClient(timeout=30.0) as client:
             resp = await client.post(
                 f"{target_host}/slots/{slot_id}?action=save",
                 json={"filename": os.path.basename(slot_file)},
@@ -480,7 +502,7 @@ async def proxy_request(request: Request, server_id: str, path: str):
     if SLOT_SAVE_DIR and session_id and is_chat_completion:
         num_slots = await _discover_num_slots(target_host, server_id)
         slot_id = _resolve_slot_id(session_id, server_id, num_slots)
-        slot_file = _slot_file_path(session_id)
+        slot_file = _slot_file_path(session_id, server_id)
         # Track session activity for cleanup decisions
         touch_session_activity(session_id)
         logger.info(
@@ -498,65 +520,13 @@ async def proxy_request(request: Request, server_id: str, path: str):
             is_chat=is_chat_completion,
         )
 
-    # Reject chat completion requests when all slots are busy to prevent
-    # request queueing that causes cascading timeouts with --parallel 1.
-    # Include a Retry-After header so callers can back off instead of
-    # hammering the endpoint in a tight retry loop.
-    # Only reject if the server is healthy (responding to /health) AND
-    # all slots report as busy — a freshly restarted server may show stale
-    # slot state, so we skip the check if /health fails.
+    # NOTE: Slot-busy rejection removed. The API's priority queue is the
+    # single gatekeeper for request admission — it checks slot availability
+    # via check_slot_availability() before releasing requests. Having the
+    # runner independently reject creates a race condition where the queue
+    # releases a request but the runner rejects it before it reaches the slot.
+    # llama.cpp itself will queue the request internally if all slots are busy.
     remaining = path
-    if is_chat_completion:
-        try:
-            async with httpx.AsyncClient(timeout=2.0) as check_client:
-                # Verify the server is actually responsive first
-                health_resp = await check_client.get(f"{target_host}/health")
-                if health_resp.status_code == 200:
-                    slots_resp = await check_client.get(f"{target_host}/slots")
-                    if slots_resp.status_code == 200:
-                        slots = slots_resp.json()
-                        # Only reject when there are slots AND all of them
-                        # are actively processing.  An empty slots list
-                        # (e.g., misconfigured server) should not be
-                        # treated as "all busy" — let the upstream handle it.
-                        if slots and all(s.get("is_processing", False) for s in slots):
-                            # Estimate remaining time from the busiest slot.
-                            # Fall back to 30 s if we can't estimate.
-                            retry_after = 30
-                            for s in slots:
-                                if not s.get("is_processing"):
-                                    continue
-                                next_token = s.get("next_token") or {}
-                                n_remain = next_token.get("n_remain")
-                                n_decoded = next_token.get("n_decoded", 0)
-                                # n_ctx is the slot's context window;
-                                # tokens left ≈ n_ctx - n_decoded when
-                                # n_remain is unavailable or negative.
-                                n_ctx = s.get("n_ctx", 0)
-                                if n_remain is None or n_remain < 0:
-                                    n_remain = max(n_ctx - n_decoded, 1)
-                                # Try to get token speed from the slot.
-                                # Fall back to 20 tokens/s if unavailable.
-                                t_token_ms = s.get("t_token_ms")
-                                if t_token_ms is None or t_token_ms <= 0:
-                                    t_token_ms = 50  # 20 tok/s default
-                                estimated_ms = n_remain * t_token_ms
-                                # Add 20% safety margin, round up to seconds
-                                slot_retry = int(estimated_ms * 1.2 / 1000) + 1
-                                retry_after = max(retry_after, slot_retry)
-                            logger.warning(
-                                f"All slots busy, rejecting request "
-                                f"(retry_after={retry_after}s)"
-                            )
-                            raise HTTPException(
-                                status_code=503,
-                                detail="All inference slots are busy",
-                                headers={"Retry-After": str(retry_after)},
-                            )
-        except HTTPException:
-            raise
-        except Exception:
-            pass  # If /health or /slots check fails, proceed normally
 
     # Restore KV cache slot before chat completion
     if slot_file:
@@ -587,8 +557,14 @@ async def proxy_request(request: Request, server_id: str, path: str):
                 body_dict = json.loads(body)
                 body_dict["id_slot"] = _session_slot_cache.get(session_id, slot_id)
                 upstream_body = json.dumps(body_dict)
-            except Exception:
-                pass
+            except (json.JSONDecodeError, TypeError, ValueError) as e:
+                logger.error(
+                    "Failed to inject id_slot into request body — slot persistence "
+                    "will not work for this request. Body may be malformed.",
+                    error=str(e),
+                    session_id=session_id,
+                    slot_id=slot_id,
+                )
 
         # Build headers (exclude hop-by-hop)
         hop_by_hop = {

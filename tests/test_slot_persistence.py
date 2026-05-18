@@ -238,6 +238,10 @@ class TestSlotProxyHelpers:
             path = _slot_file_path("session-abc-123")
             assert path == "/data/slots/slot_session-abc-123.bin"
 
+            # With server_id, file is model-specific to prevent cross-model corruption
+            path_with_server = _slot_file_path("session-abc-123", "srv-xyz")
+            assert path_with_server == "/data/slots/slot_session-abc-123_srv-xyz.bin"
+
     def test_resolve_slot_id_consistent(self):
         """Same session_id always maps to the same slot."""
         from proxy.router import _resolve_slot_id

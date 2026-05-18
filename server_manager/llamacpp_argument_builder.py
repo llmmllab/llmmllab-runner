@@ -102,7 +102,7 @@ class LlamaCppArgumentBuilder:
                 "timeout": 600,
                 "context_shift": True,
                 "mirostat": 1,
-                "cache_ram": 0,
+                "cache_ram": params.cache_ram if params.cache_ram is not None else 8192,
                 "parallel": params.parallel or 4,
                 "kv_unified": params.kv_unified,
                 "repeat_penalty": params.repeat_penalty or 1.1,

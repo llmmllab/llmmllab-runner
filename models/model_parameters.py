@@ -229,4 +229,16 @@ class ModelParameters(BaseModel):
     ] = True
     """Use unified key-value cache format for improved performance and future compatibility."""
 
+    cache_ram: Annotated[
+        Optional[int],
+        Field(
+            default=None,
+            description="Host-memory (system RAM) prompt cache size in MiB (llama.cpp --cache-ram). "
+            "When set, idle slot KV data is cached in system RAM as a secondary tier "
+            "behind VRAM, enabling --cache-idle-slots for automatic save/restore of idle slots. "
+            "Default: 8192 (8 GiB). Set to 0 to disable, -1 for no limit.",
+        ),
+    ] = None
+    """Host-memory prompt cache size in MiB. Active KV always lives in VRAM; this provides a RAM fallback for idle slots."""
+
     model_config = ConfigDict(extra="ignore")
