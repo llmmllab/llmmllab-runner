@@ -71,7 +71,7 @@
     size: 26015429760
     original_ctx: 2048
   parameters:
-    num_ctx: 800000
+    num_ctx: 400000
     repeat_last_n: 128
     repeat_penalty: 0.5
     temperature: 0.7
@@ -94,7 +94,7 @@
     # ctx_size_reduction_limit: 1.0
     # slot_prompt_similarity: 0
     # MTP requires parallel=1 (llama.cpp limitation until parallel drafting support lands)
-    parallel: 4
+    parallel: 2
     is_default: True
     split_mode: "row"
     spec_type_mtp: true
