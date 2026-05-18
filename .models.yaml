@@ -88,7 +88,7 @@
     think: False
     reasoning_budget: 8192
     kv_on_cpu: False
-    tensor_split: "0,1,1"
+    # tensor_split: "0,1,1"
     main_gpu: 2
     # n_cpu_moe: 10
     # ctx_size_reduction_limit: 1.0
