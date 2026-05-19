@@ -27,6 +27,17 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import Response, StreamingResponse
 
 from config import PROXY_TIMEOUT, SLOT_SAVE_DIR
+from middleware.prometheus_metrics import (
+    prompt_body_bytes,
+    prompt_fingerprint_total,
+    prompt_first_divergence_byte,
+    slot_lru_size,
+    slot_resolutions_total,
+    slot_restore_duration_seconds,
+    slot_restore_total,
+    slot_save_duration_seconds,
+    slot_save_total,
+)
 from utils.logging import llmmllogger, _session_id_ctx
 
 logger = llmmllogger.bind(component="proxy_router")
@@ -256,7 +267,9 @@ def _log_prompt_divergence(session_id: str, body: bytes) -> None:
 
     # Build a compact representation: "1024:abcd1234,2048:..."
     hash_str = ",".join(f"{off}:{h or '-'}" for off, h in new_hashes)
+    prompt_body_bytes.observe(len(body))
     if prev is None:
+        prompt_fingerprint_total.labels(kind="first").inc()
         logger.info(
             "Prompt fingerprint (first turn)",
             session_id=session_id,
@@ -264,6 +277,7 @@ def _log_prompt_divergence(session_id: str, body: bytes) -> None:
             hashes=hash_str,
         )
     elif first_div is None:
+        prompt_fingerprint_total.labels(kind="stable").inc()
         logger.info(
             "Prompt fingerprint (prefix STABLE across all checkpoints)",
             session_id=session_id,
@@ -271,6 +285,8 @@ def _log_prompt_divergence(session_id: str, body: bytes) -> None:
             hashes=hash_str,
         )
     else:
+        prompt_fingerprint_total.labels(kind="diverged").inc()
+        prompt_first_divergence_byte.observe(first_div)
         logger.info(
             "Prompt fingerprint (DIVERGED from previous turn)",
             session_id=session_id,
@@ -446,6 +462,7 @@ async def _restore_slot(
     if client is None:
         client = httpx.AsyncClient(timeout=30.0)
         own_client = True
+    start = time.monotonic()
     try:
         resp = await client.post(
             f"{target_host}/slots/{slot_id}?action=restore",
@@ -456,6 +473,12 @@ async def _restore_slot(
         except Exception:
             body = {}
         n_restored = body.get("n_restored") if isinstance(body, dict) else None
+        ok = resp.status_code == 200
+        slot_restore_total.labels(
+            slot_id=str(slot_id),
+            outcome="success" if ok else "failure",
+        ).inc()
+        slot_restore_duration_seconds.observe(time.monotonic() - start)
         logger.info(
             "Slot restore",
             session_id=session_id,
@@ -465,8 +488,10 @@ async def _restore_slot(
             status=resp.status_code,
             n_restored=n_restored,
         )
-        return resp.status_code == 200
+        return ok
     except Exception as e:
+        slot_restore_total.labels(slot_id=str(slot_id), outcome="failure").inc()
+        slot_restore_duration_seconds.observe(time.monotonic() - start)
         logger.warning(
             "Slot restore failed",
             session_id=session_id,
@@ -496,6 +521,7 @@ async def _save_slot(
     if client is None:
         client = httpx.AsyncClient(timeout=30.0)
         own_client = True
+    start = time.monotonic()
     try:
         resp = await client.post(
             f"{target_host}/slots/{slot_id}?action=save",
@@ -506,6 +532,12 @@ async def _save_slot(
         except Exception:
             body = {}
         n_saved = body.get("n_saved") if isinstance(body, dict) else None
+        ok = resp.status_code == 200
+        slot_save_total.labels(
+            slot_id=str(slot_id),
+            outcome="success" if ok else "failure",
+        ).inc()
+        slot_save_duration_seconds.observe(time.monotonic() - start)
         logger.info(
             "Slot save",
             session_id=session_id,
@@ -515,8 +547,10 @@ async def _save_slot(
             status=resp.status_code,
             n_saved=n_saved,
         )
-        return resp.status_code == 200
+        return ok
     except Exception as e:
+        slot_save_total.labels(slot_id=str(slot_id), outcome="failure").inc()
+        slot_save_duration_seconds.observe(time.monotonic() - start)
         logger.warning(
             "Slot save failed",
             session_id=session_id,
@@ -799,6 +833,11 @@ async def proxy_request(request: Request, server_id: str, path: str):
         slot_lru = await _get_slot_lru(server_id, target_host)
         slot_id, evicted_pair = await slot_lru.touch(session_id)
         touch_session_activity(session_id)
+        slot_resolutions_total.labels(
+            slot_id=str(slot_id),
+            evicted="true" if evicted_pair is not None else "false",
+        ).inc()
+        slot_lru_size.labels(server_id=server_id).set(len(slot_lru._map))
         logger.info(
             "Resolved slot via LRU",
             session_id=session_id,

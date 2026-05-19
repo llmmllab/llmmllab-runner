@@ -182,6 +182,78 @@ llama_server_tokens_predicted_total = Gauge(
     registry=_registry,
 )
 
+# --- Round 1: slot pinning, KV persistence, prompt-stability diagnostics ---
+
+slot_resolutions_total = Counter(
+    "slot_resolutions_total",
+    "Number of session->slot resolutions performed by the proxy's slot LRU",
+    ["slot_id", "evicted"],  # evicted: "true" if an older session was kicked out
+    registry=_registry,
+)
+
+slot_lru_size = Gauge(
+    "slot_lru_size",
+    "Current number of sessions tracked per upstream server's slot LRU",
+    ["server_id"],
+    registry=_registry,
+)
+
+slot_save_total = Counter(
+    "slot_save_total",
+    "Slot KV save calls to llama.cpp /slots/{id}?action=save",
+    ["slot_id", "outcome"],  # outcome: "success" | "failure"
+    registry=_registry,
+)
+
+slot_restore_total = Counter(
+    "slot_restore_total",
+    "Slot KV restore calls to llama.cpp /slots/{id}?action=restore",
+    ["slot_id", "outcome"],
+    registry=_registry,
+)
+
+slot_save_duration_seconds = Histogram(
+    "slot_save_duration_seconds",
+    "Wall-clock duration of slot save requests to llama.cpp",
+    buckets=(0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0),
+    registry=_registry,
+)
+
+slot_restore_duration_seconds = Histogram(
+    "slot_restore_duration_seconds",
+    "Wall-clock duration of slot restore requests to llama.cpp",
+    buckets=(0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0),
+    registry=_registry,
+)
+
+prompt_fingerprint_total = Counter(
+    "prompt_fingerprint_total",
+    "Per-session prompt prefix-hash outcomes vs previous turn",
+    ["kind"],  # "first" | "stable" | "diverged"
+    registry=_registry,
+)
+
+prompt_first_divergence_byte = Histogram(
+    "prompt_first_divergence_byte",
+    "Byte offset at which a chat-completion request body first diverged "
+    "from the previous request body for the same session. Lower = worse "
+    "for llama.cpp prefix-cache reuse.",
+    buckets=(
+        1024, 2048, 4096, 8192, 12288, 16384, 20480, 24576,
+        32768, 49152, 65536, 98304, 131072,
+    ),
+    registry=_registry,
+)
+
+prompt_body_bytes = Histogram(
+    "prompt_body_bytes",
+    "Size of upstream chat completion request body in bytes",
+    buckets=(
+        4096, 16384, 65536, 262144, 1048576, 4194304, 16777216,
+    ),
+    registry=_registry,
+)
+
 
 class PrometheusMiddleware(BaseHTTPMiddleware):
     """Instrument every request with Prometheus counters and histograms."""
