@@ -214,6 +214,15 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                 await task
             except asyncio.CancelledError:
                 pass
+    # Close the pooled httpx clients used by the proxy.  Background tasks
+    # above may have held connections; close after they're cancelled but
+    # before we kill the upstream llama.cpp processes so any in-flight
+    # requests get a clean transport-level signal.
+    try:
+        from proxy.router import aclose_all_clients
+        await aclose_all_clients()
+    except Exception as e:
+        logger.warning(f"aclose_all_clients during shutdown failed: {e}")
     if server_cache:
         server_cache.stop_all()
     # Shutdown tracing
