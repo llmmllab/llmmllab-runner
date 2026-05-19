@@ -283,202 +283,143 @@ class TestSlotProxyHelpers:
             assert sid == 0
 
 
-class TestSessionSlotCache:
-    """Regression tests for the slot ID mismatch bug.
+class TestSlotLRU:
+    """Tests for the per-server SlotLRU added in Round 1.
 
-    Root cause: llama.cpp ignores `slot_id_or_index` when LCP similarity
-    matching finds a better slot (sim_best > 0.100).  The hash-assigned
-    slot and the slot llama.cpp actually used diverged, causing save/restore
-    to hit the wrong slot and return 404.
-
-    Fix: Don't inject `slot_id_or_index` on the first request.  Capture
-    `x-slot-id` from the response headers, cache per session, and only
-    inject on subsequent requests.
+    Replaces the older hash-then-capture pattern (_session_slot_cache,
+    x-slot-id header). The runner now eagerly assigns each session a slot
+    via a fixed-capacity LRU keyed by session_id and injects ``id_slot``
+    into the upstream JSON body before forwarding. llama.cpp respects
+    explicit id_slot, so the assignment is authoritative — no "actual vs
+    hash" mismatch to capture from a response header.
     """
 
-    def setup_method(self):
-        """Clear session slot cache before each test."""
-        from proxy.router import _session_slot_cache
-        _session_slot_cache.clear()
+    def test_first_session_gets_lowest_free_slot(self):
+        """A brand-new session is assigned slot 0 in a fresh LRU."""
+        import asyncio
+        from proxy.router import SlotLRU
 
-    def test_first_request_no_slot_injection(self):
-        """slot_id_or_index is NOT injected when session is not cached.
+        lru = SlotLRU(capacity=4)
+        slot_id, evicted = asyncio.run(lru.touch("session-a"))
+        assert slot_id == 0
+        assert evicted is None
 
-        On the very first request for a session, we don't know which slot
-        llama.cpp will assign, so we must NOT send slot_id_or_index.
-        """
-        from proxy.router import _session_slot_cache
+    def test_same_session_returns_same_slot(self):
+        """touch() on an already-pinned session returns the same slot, no eviction."""
+        import asyncio
+        from proxy.router import SlotLRU
 
-        session_id = "new-session-xyz"
-        assert session_id not in _session_slot_cache
+        lru = SlotLRU(capacity=4)
 
-        body = b'{"model": "test", "messages": [{"role": "user", "content": "hi"}]}'
-        body_dict = __import__("json").loads(body)
-        assert "slot_id_or_index" not in body_dict
+        async def _run():
+            s1, e1 = await lru.touch("sticky")
+            s2, e2 = await lru.touch("sticky")
+            s3, e3 = await lru.touch("sticky")
+            return s1, s2, s3, (e1, e2, e3)
 
-        # Simulate the injection logic from proxy_request():
-        #   if session_id in _session_slot_cache: inject
-        if session_id in _session_slot_cache:
-            body_dict["slot_id_or_index"] = _session_slot_cache[session_id]
+        s1, s2, s3, evicts = asyncio.run(_run())
+        assert s1 == s2 == s3
+        assert all(e is None for e in evicts)
 
-        assert "slot_id_or_index" not in body_dict
+    def test_distinct_sessions_get_distinct_slots(self):
+        """Up to capacity, each new session_id claims a different slot."""
+        import asyncio
+        from proxy.router import SlotLRU
 
-    def test_subsequent_request_injects_cached_slot(self):
-        """slot_id_or_index IS injected when session has a cached slot."""
-        from proxy.router import _session_slot_cache
+        lru = SlotLRU(capacity=4)
 
-        session_id = "known-session"
-        _session_slot_cache[session_id] = 7
+        async def _run():
+            results = []
+            for sid in ("a", "b", "c", "d"):
+                slot_id, evicted = await lru.touch(sid)
+                results.append((slot_id, evicted))
+            return results
 
-        body = b'{"model": "test", "messages": [{"role": "user", "content": "hi"}]}'
-        body_dict = __import__("json").loads(body)
+        results = asyncio.run(_run())
+        slot_ids = [r[0] for r in results]
+        evictions = [r[1] for r in results]
+        assert sorted(slot_ids) == [0, 1, 2, 3]
+        assert all(e is None for e in evictions)
 
-        # Simulate the injection logic
-        if session_id in _session_slot_cache:
-            body_dict["slot_id_or_index"] = _session_slot_cache[session_id]
+    def test_capacity_exceeded_evicts_lru_and_reuses_slot(self):
+        """When the LRU is full, the next new session evicts the oldest and reuses its slot."""
+        import asyncio
+        from proxy.router import SlotLRU
 
-        assert body_dict["slot_id_or_index"] == 7
+        lru = SlotLRU(capacity=2)
 
-    def test_x_slot_id_capture_from_headers(self):
-        """x-slot-id response header is parsed and cached correctly.
+        async def _run():
+            # Fill capacity. 'a' is LRU, 'b' is MRU.
+            s_a, _ = await lru.touch("a")
+            s_b, _ = await lru.touch("b")
+            # A new session 'c' should evict 'a' (oldest) and reuse its slot.
+            s_c, evicted = await lru.touch("c")
+            return s_a, s_b, s_c, evicted
 
-        This verifies the logic that captures the slot ID from llama.cpp's
-        response headers, as done in _stream_upstream().
-        """
-        from proxy.router import _session_slot_cache
+        s_a, s_b, s_c, evicted = asyncio.run(_run())
+        assert {s_a, s_b} == {0, 1}
+        assert evicted == ("a", s_a)
+        assert s_c == s_a  # the evicted slot is reused
 
-        session_id = "session-abc"
-        assert session_id not in _session_slot_cache
+    def test_touch_refreshes_recency(self):
+        """touch() bumps a session to MRU so it survives an eviction round."""
+        import asyncio
+        from proxy.router import SlotLRU
 
-        # Simulate capturing x-slot-id from response headers
-        x_slot = "3"
-        resp_slot_id = None
-        if x_slot:
-            try:
-                resp_slot_id = int(x_slot)
-            except (ValueError, TypeError):
-                pass
+        lru = SlotLRU(capacity=2)
 
-        # Cache the discovered slot
-        if session_id:
-            _session_slot_cache[session_id] = resp_slot_id
+        async def _run():
+            await lru.touch("a")
+            await lru.touch("b")
+            # Re-touching 'a' should make 'b' the LRU.
+            await lru.touch("a")
+            # Inserting 'c' should now evict 'b', not 'a'.
+            _, evicted = await lru.touch("c")
+            return evicted
 
-        assert _session_slot_cache[session_id] == 3
+        evicted = asyncio.run(_run())
+        assert evicted is not None
+        assert evicted[0] == "b"
 
-    def test_x_slot_id_malicious_value_handled(self):
-        """Non-integer x-slot-id values don't crash the capture logic."""
-        for bad_value in ["", "abc", "3.5", None]:
-            resp_slot_id = None
-            if bad_value:
-                try:
-                    resp_slot_id = int(bad_value)
-                except (ValueError, TypeError):
-                    pass
-            # Should be None for all bad values
-            if bad_value in ("", "abc", "3.5", None):
-                assert resp_slot_id is None
+    def test_peek_does_not_touch_recency(self):
+        """peek() returns the slot for a session without making it MRU."""
+        import asyncio
+        from proxy.router import SlotLRU
 
-    def test_save_uses_actual_slot_not_hash_slot(self):
-        """Save/restore uses the actual slot from x-slot-id, not the hash.
+        lru = SlotLRU(capacity=2)
 
-        Regression: when hash assigned slot 5 but llama.cpp used slot 7
-        via LCP matching, save hit slot 5 and got 404. Now it should use
-        the actual slot ID from the response.
-        """
-        from proxy.router import _session_slot_cache, _resolve_slot_id
+        async def _run():
+            slot_a, _ = await lru.touch("a")
+            await lru.touch("b")  # 'b' is now MRU; 'a' is LRU
+            # peek shouldn't change recency
+            peeked = await lru.peek("a")
+            _, evicted = await lru.touch("c")  # should still evict 'a'
+            return slot_a, peeked, evicted
 
-        session_id = "session-mismatch"
-        server_id = "server-1"
+        slot_a, peeked, evicted = asyncio.run(_run())
+        assert peeked == slot_a
+        assert evicted is not None and evicted[0] == "a"
 
-        # Hash assigns some slot
-        hash_slot = _resolve_slot_id(session_id, server_id, 4)
+    def test_peek_returns_none_for_unknown_session(self):
+        import asyncio
+        from proxy.router import SlotLRU
 
-        # But llama.cpp actually assigned a different slot (via x-slot-id)
-        # Pick a slot that differs from the hash slot to prove the point
-        resp_slot_id = (hash_slot + 1) % 4
-        _session_slot_cache[session_id] = resp_slot_id
+        lru = SlotLRU(capacity=4)
+        assert asyncio.run(lru.peek("ghost")) is None
 
-        # On the save path, we use the actual slot from response headers
-        # (captured as `resp_slot_id` in the streaming path)
-        # The logic is: actual_slot = resp_slot_id if resp_slot_id else slot_id
-        final_slot = resp_slot_id if resp_slot_id is not None else hash_slot
+    def test_slot_ids_always_in_range(self):
+        """Slot ids returned by touch() must always be in [0, capacity)."""
+        import asyncio
+        from proxy.router import SlotLRU
 
-        assert final_slot == resp_slot_id
-        assert final_slot != hash_slot
+        lru = SlotLRU(capacity=3)
 
-    def test_restore_uses_cached_slot_from_previous_request(self):
-        """Restore uses the cached slot ID from a prior request's x-slot-id."""
-        from proxy.router import _session_slot_cache
+        async def _run():
+            ids = []
+            for sid in (f"s{i}" for i in range(10)):  # 10 sessions, capacity 3
+                slot_id, _ = await lru.touch(sid)
+                ids.append(slot_id)
+            return ids
 
-        session_id = "returning-session"
-        # Previous request established that llama.cpp uses slot 5
-        _session_slot_cache[session_id] = 5
-
-        # On restore, we use the cached value
-        restore_slot_id = _session_slot_cache.get(session_id, 0)
-        assert restore_slot_id == 5
-
-
-class TestSlotOrchestrationFlow:
-    """Integration-style tests for the full slot orchestration flow."""
-
-    def setup_method(self):
-        from proxy.router import _session_slot_cache, _num_slots_cache
-        _session_slot_cache.clear()
-        _num_slots_cache.clear()
-
-    def test_full_flow_first_then_second_request(self):
-        """Simulate first request (no injection) then second (with injection).
-
-        1. First request: no slot_id_or_index, llama.cpp assigns slot via
-           LCP matching, we capture x-slot-id from response
-        2. Second request: slot_id_or_index injected from cache, llama.cpp
-           uses the exact same slot, save/restore hits the right slot
-        """
-        import json as json_mod
-        from proxy.router import _session_slot_cache, _resolve_slot_id
-
-        session_id = "flow-test-session"
-        body = json_mod.dumps({
-            "model": "test",
-            "messages": [{"role": "user", "content": "hello"}],
-        })
-
-        # --- First request ---
-        # No cached slot, so no injection
-        assert session_id not in _session_slot_cache
-        body_dict = json_mod.loads(body)
-        if session_id in _session_slot_cache:
-            body_dict["slot_id_or_index"] = _session_slot_cache[session_id]
-        assert "slot_id_or_index" not in body_dict
-
-        # Llama.cpp responds with x-slot-id: 2
-        resp_slot_id = 2
-        _session_slot_cache[session_id] = resp_slot_id
-
-        # --- Second request ---
-        # Cached slot exists, so inject it
-        body_dict = json_mod.loads(body)
-        if session_id in _session_slot_cache:
-            body_dict["slot_id_or_index"] = _session_slot_cache[session_id]
-        assert body_dict["slot_id_or_index"] == 2
-
-    def test_slot_cache_survives_multiple_requests(self):
-        """Cached slot ID persists across multiple requests for same session."""
-        from proxy.router import _session_slot_cache
-
-        session_id = "sticky-session"
-        _session_slot_cache[session_id] = 4
-
-        for _ in range(5):
-            assert _session_slot_cache.get(session_id) == 4
-
-    def test_different_sessions_get_different_slots(self):
-        """Different sessions can have different cached slots."""
-        from proxy.router import _session_slot_cache
-
-        # Simulate two sessions that llama.cpp assigned to different slots
-        _session_slot_cache["session-a"] = 0
-        _session_slot_cache["session-b"] = 2
-
-        assert _session_slot_cache["session-a"] != _session_slot_cache["session-b"]
+        ids = asyncio.run(_run())
+        assert all(0 <= s < 3 for s in ids)
