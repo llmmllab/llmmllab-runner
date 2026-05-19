@@ -105,6 +105,7 @@ class LlamaCppArgumentBuilder:
                 "cache_ram": params.cache_ram if params.cache_ram is not None else 8192,
                 "parallel": params.parallel or 4,
                 "kv_unified": params.kv_unified,
+                "cache_reuse": params.cache_reuse if params.cache_reuse is not None else 256,
                 "repeat_penalty": params.repeat_penalty or 1.1,
                 "repeat_last_n": (
                     params.repeat_last_n if params.repeat_last_n is not None else 256
