@@ -200,6 +200,88 @@ def _save_file_exists(session_id: str, server_id: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Prompt-divergence diagnostic (temporary).  Logs at which byte offset the
+# request body first differs from the previous request body for the same
+# session, so we can pin down why llama.cpp's prefix cache stops matching
+# past a certain depth.  Cheap enough to leave on; remove once the
+# divergence point is identified and fixed.
+# ---------------------------------------------------------------------------
+
+import hashlib as _hashlib  # local alias — hashlib is also imported lazily below
+
+# session_id -> list of (offset, md5_short) snapshots from the previous request
+_session_prompt_hashes: Dict[str, List[Tuple[int, str]]] = {}
+
+# Byte offsets at which we hash the prompt body.  Spans the range where we
+# observed cache divergence (between ~16K and ~24K llama.cpp checkpoints).
+_PROMPT_HASH_OFFSETS: Tuple[int, ...] = (
+    1024, 2048, 4096, 8192, 12288, 16384, 20480, 24576,
+    32768, 49152, 65536, 98304, 131072,
+)
+
+
+def _hash_prefix(data: bytes, offset: int) -> str:
+    """Short MD5 (first 8 hex chars) of ``data[:offset]``.
+
+    Returns an empty string if the body is shorter than ``offset``.
+    """
+    if len(data) < offset:
+        return ""
+    return _hashlib.md5(data[:offset]).hexdigest()[:8]
+
+
+def _log_prompt_divergence(session_id: str, body: bytes) -> None:
+    """Compare body prefix-hashes to the prior request for this session.
+
+    Logs one structured INFO line per request with: body length, all
+    prefix hashes, and (if applicable) the first byte offset at which the
+    hash differs from the previous request.
+    """
+    if not session_id or not body:
+        return
+    new_hashes: List[Tuple[int, str]] = [
+        (off, _hash_prefix(body, off)) for off in _PROMPT_HASH_OFFSETS
+    ]
+    prev = _session_prompt_hashes.get(session_id)
+    first_div: Optional[int] = None
+    if prev:
+        for (off_new, h_new), (off_prev, h_prev) in zip(new_hashes, prev):
+            # Both must have data at this offset to be comparable.
+            if not h_new or not h_prev:
+                continue
+            if h_new != h_prev:
+                first_div = off_new
+                break
+    _session_prompt_hashes[session_id] = new_hashes
+
+    # Build a compact representation: "1024:abcd1234,2048:..."
+    hash_str = ",".join(f"{off}:{h or '-'}" for off, h in new_hashes)
+    if prev is None:
+        logger.info(
+            "Prompt fingerprint (first turn)",
+            session_id=session_id,
+            body_len=len(body),
+            hashes=hash_str,
+        )
+    elif first_div is None:
+        logger.info(
+            "Prompt fingerprint (prefix STABLE across all checkpoints)",
+            session_id=session_id,
+            body_len=len(body),
+            hashes=hash_str,
+        )
+    else:
+        logger.info(
+            "Prompt fingerprint (DIVERGED from previous turn)",
+            session_id=session_id,
+            body_len=len(body),
+            first_divergence_byte=first_div,
+            hashes=hash_str,
+            prev_hashes=",".join(f"{off}:{h or '-'}" for off, h in prev),
+        )
+
+
+# ---------------------------------------------------------------------------
 # Per-upstream-server httpx.AsyncClient pool
 # ---------------------------------------------------------------------------
 
@@ -766,6 +848,12 @@ async def proxy_request(request: Request, server_id: str, path: str):
 
         # Read request body
         body = await request.body()
+
+        # Diagnostic: log prefix-hash divergence vs prior turn for this session.
+        # Body is hashed BEFORE our slot/cache injection so we measure only
+        # api-side variation.
+        if is_chat_completion and session_id and body:
+            _log_prompt_divergence(session_id, body)
 
         # Step 2: eager body injection for chat completions with a pinned slot
         upstream_body = body
