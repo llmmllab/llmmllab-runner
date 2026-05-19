@@ -76,6 +76,17 @@ class ServerCache:
                 created_at=time.time(),
                 starting=True,
             )
+        # Wire the manager's death watchdog to this cache entry so a crashed
+        # child purges itself instead of leaving a zombie entry that the
+        # proxy keeps dispatching to.  Safe even if the manager hasn't
+        # started its process yet — the watchdog is spawned inside start().
+        if manager is not None and hasattr(manager, "attach_lifecycle"):
+            try:
+                manager.attach_lifecycle(server_id, self)
+            except Exception as e:
+                logger.warning(
+                    f"Could not attach lifecycle hook for {server_id}: {e}"
+                )
         logger.info(
             f"Registered starting server {server_id} for model {model_id} on port {port}"
         )
@@ -107,6 +118,13 @@ class ServerCache:
                 manager=manager,
                 created_at=time.time(),
             )
+        if manager is not None and hasattr(manager, "attach_lifecycle"):
+            try:
+                manager.attach_lifecycle(server_id, self)
+            except Exception as e:
+                logger.warning(
+                    f"Could not attach lifecycle hook for {server_id}: {e}"
+                )
         logger.info(
             f"Registered server {server_id} for model {model_id} on port {port}"
         )
@@ -228,6 +246,10 @@ class ServerCache:
         for entry in evicted:
             if entry.manager is not None:
                 try:
+                    # Mark as intentional so the watchdog doesn't classify
+                    # this as a crash and emit a process_died metric.
+                    if hasattr(entry.manager, "_intentional_stop"):
+                        entry.manager._intentional_stop = True
                     entry.manager.stop()
                     logger.info(
                         f"Hard-evicted idle server {entry.server_id} "
@@ -240,6 +262,42 @@ class ServerCache:
             else:
                 logger.info(f"Hard-evicted idle server {entry.server_id} (no manager)")
         return [e.server_id for e in evicted]
+
+    # ------------------------------------------------------------------
+    # Fast purge for processes that died on their own (crash, OOM kill,
+    # GGML_ASSERT abort, etc).  Called by the per-manager watchdog thread
+    # in BaseServerManager._watchdog_run.  Bypasses the TTL-based eviction
+    # path so the proxy stops dispatching to a dead pid immediately,
+    # instead of waiting up to EVICTION_TIMEOUT_MIN.
+    # ------------------------------------------------------------------
+
+    def purge_dead_server(self, server_id: str) -> bool:
+        """Remove a server entry that is known to be dead.
+
+        Idempotent — returns False if the entry is already gone (e.g. the
+        intentional stop path already called remove() before the watchdog
+        fired).  Does NOT call manager.stop(); the process has already
+        exited by the time we get here.
+
+        Returns True if an entry was actually removed.
+        """
+        with self._lock:
+            entry = self._servers.pop(server_id, None)
+
+        if entry is None:
+            # Idempotent: already removed by stop()/remove() path.
+            return False
+
+        pid = None
+        if entry.manager is not None:
+            pid = getattr(entry.manager, "pid", None)
+
+        logger.warning(
+            f"Purged dead server {server_id} from cache "
+            f"(model={entry.model_id}, port={entry.port}, pid={pid}). "
+            f"Subsequent acquires will start a fresh server."
+        )
+        return True
 
     def remove(self, server_id: str) -> Optional[ServerEntry]:
         """Remove a server from the cache. Returns the entry if it existed."""
@@ -283,6 +341,11 @@ class ServerCache:
             if entry.manager is not None:
                 try:
                     logger.info(f"Stopping server {entry.server_id}")
+                    # stop() sets _intentional_stop internally, but be
+                    # defensive in case a subclass overrides it without
+                    # calling super().
+                    if hasattr(entry.manager, "_intentional_stop"):
+                        entry.manager._intentional_stop = True
                     entry.manager.stop()
                 except Exception as e:
                     logger.error(f"Error stopping server {entry.server_id}: {e}")

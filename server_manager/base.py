@@ -12,12 +12,18 @@ import threading
 import time
 import traceback as tb_module
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Optional
+from collections import deque
+from typing import Any, Deque, Dict, List, Optional
 
 import requests
 
 from models import Model
 from utils.logging import llmmllogger
+
+# Number of recent stderr/stdout lines to retain for crash diagnostics.
+_STDERR_RING_BUFFER_SIZE = 200
+# Number of those lines to dump when the child process dies unexpectedly.
+_STDERR_DUMP_ON_DEATH = 50
 
 
 class BaseServerManager(ABC):
@@ -46,6 +52,29 @@ class BaseServerManager(ABC):
         self.startup_timeout = startup_timeout
         self.pid: Optional[int] = None
 
+        # ------------------------------------------------------------------
+        # Crash / unexpected-exit instrumentation.
+        # ------------------------------------------------------------------
+        # Ring buffer of recent stderr lines, so when the child dies we can
+        # dump the *actual* error (e.g. GGML_ASSERT) instead of just an exit
+        # code.  Protected implicitly by the GIL — deque append/pop is atomic.
+        self._stderr_buffer: Deque[str] = deque(maxlen=_STDERR_RING_BUFFER_SIZE)
+
+        # Flag set by stop() (or any other intentional shutdown path) so the
+        # watchdog can distinguish "we asked the process to exit" from "it
+        # crashed on its own".
+        self._intentional_stop: bool = False
+
+        # Watchdog thread that awaits proc.wait() and purges the cache entry
+        # on exit.  Created in _spawn_watchdog() after the process is alive.
+        self._watchdog_thread: Optional[threading.Thread] = None
+
+        # Cache hook — populated via attach_lifecycle() so the watchdog can
+        # call ServerCache.purge_dead_server(server_id) without an import
+        # cycle.
+        self._server_id: Optional[str] = None
+        self._cache_ref: Any = None  # ServerCache, avoid import cycle
+
     def _find_available_port(self, start_port: int = 8001) -> int:
         """Find an available port starting from start_port."""
         for port in range(start_port, start_port + 100):
@@ -64,6 +93,104 @@ class BaseServerManager(ABC):
     @abstractmethod
     def _build_server_args(self) -> List[str]:
         """Build command line arguments for the server."""
+
+    # ------------------------------------------------------------------
+    # Lifecycle hooks for ServerCache integration.
+    # ------------------------------------------------------------------
+
+    def attach_lifecycle(self, server_id: str, cache: Any) -> None:
+        """Tell the manager which cache entry it belongs to.
+
+        The ServerCache calls this from register_starting() / register() so
+        that, on unexpected process death, the watchdog thread can purge the
+        stale entry from the cache immediately (instead of waiting for the
+        idle-eviction reaper to notice).
+
+        Safe to call multiple times.  Has no effect on an already-running
+        watchdog — wiring is just used at exit time.
+        """
+        self._server_id = server_id
+        self._cache_ref = cache
+
+    def _spawn_watchdog(self) -> None:
+        """Start the per-process watchdog thread.
+
+        Called from start() / _retry_with_reduced_context() once the
+        subprocess is alive.  Idempotent — replaces any prior thread that
+        belonged to an earlier process.
+        """
+        proc = self.process
+        if proc is None:
+            return
+
+        # If a previous watchdog is still alive (e.g. after retry), let it
+        # die naturally — its target process has already exited so wait()
+        # returned, and the thread will exit on its own.
+        thread = threading.Thread(
+            target=self._watchdog_run,
+            args=(proc,),
+            name=f"server-watchdog-{self.port}",
+            daemon=True,
+        )
+        self._watchdog_thread = thread
+        thread.start()
+
+    def _watchdog_run(self, proc: subprocess.Popen) -> None:
+        """Block on proc.wait(); on exit, log + purge cache + record metric."""
+        try:
+            returncode = proc.wait()
+        except Exception as e:
+            self._logger.warning(f"Watchdog wait() failed: {e}")
+            return
+
+        # Tail of stderr for crash diagnostics.  Snapshot first so we don't
+        # race the drainer threads if the process exits with output still
+        # buffered.
+        tail = list(self._stderr_buffer)[-_STDERR_DUMP_ON_DEATH:]
+        tail_text = "\n".join(tail) if tail else "<no captured output>"
+
+        intentional = self._intentional_stop
+        # SIGTERM (143 / -15) is what stop() sends; treat it as intentional
+        # even if the flag wasn't set (e.g. external `kill` from k8s).
+        is_sigterm = returncode in (0, -15, 143)
+
+        if intentional or is_sigterm:
+            self._logger.info(
+                f"Server process exited cleanly (exit code: {returncode}, "
+                f"intentional={intentional})"
+            )
+        else:
+            self._logger.warning(
+                f"Server process died unexpectedly (exit code: {returncode}, "
+                f"pid: {self.pid}). Last {len(tail)} captured output lines:\n"
+                f"{tail_text}"
+            )
+
+        # Purge the cache entry ONLY when the process died unexpectedly.
+        # The intentional path (stop(), evict_idle(), _retry_with_reduced_
+        # context's kill of the old process) is responsible for its own
+        # cache bookkeeping — and crucially, _retry_with_reduced_context
+        # reuses the same server_id for the replacement process, so a
+        # stale watchdog firing purge here would orphan the new process.
+        if not (intentional or is_sigterm):
+            if self._cache_ref is not None and self._server_id is not None:
+                try:
+                    self._cache_ref.purge_dead_server(self._server_id)
+                except Exception as e:
+                    self._logger.warning(
+                        f"Failed to purge server {self._server_id} from cache: {e}"
+                    )
+
+        # Prometheus: distinguish unexpected death from intentional stops.
+        if not (intentional or is_sigterm):
+            try:
+                # Import lazily to avoid pulling Prometheus into module init
+                # for tests / non-runner contexts.
+                from middleware.runner_metrics import record_server_eviction
+
+                record_server_eviction("process_died")
+            except Exception as e:
+                self._logger.debug(f"Could not record process_died metric: {e}")
 
     @abstractmethod
     def get_api_endpoint(self, path: str) -> str:
@@ -113,34 +240,34 @@ class BaseServerManager(ABC):
                 )
                 self.pid = self.process.pid
 
-                # Stream subprocess stdout/stderr into our logger so failures are visible
-                def _stream_pipe(pipe, log_fn):
-                    try:
-                        if not pipe:
-                            return
-                        with pipe:
-                            for line in iter(pipe.readline, ""):
-                                if line:
-                                    log_fn(line.rstrip())
-                    except Exception:
-                        # best-effort - avoid crashing main thread
-                        pass
+                # Reset state for a fresh process so stale stderr from a
+                # prior crash / retry doesn't contaminate the next watchdog.
+                self._intentional_stop = False
+                self._stderr_buffer.clear()
 
+                # Stream subprocess stdout/stderr into our logger so failures
+                # are visible, AND tee stderr into the ring buffer so the
+                # watchdog can dump it on unexpected exit.
                 if self.process.stdout:
                     t_out = threading.Thread(
-                        target=_stream_pipe,
-                        args=(self.process.stdout, self._logger.debug),
+                        target=self._stream_pipe,
+                        args=(self.process.stdout, self._logger.debug, False),
                         daemon=True,
                     )
                     t_out.start()
 
                 if self.process.stderr:
                     t_err = threading.Thread(
-                        target=_stream_pipe,
-                        args=(self.process.stderr, self._logger.debug),
+                        target=self._stream_pipe,
+                        args=(self.process.stderr, self._logger.info, True),
                         daemon=True,
                     )
                     t_err.start()
+
+                # Spawn the death watchdog as soon as the process exists, so
+                # we catch crashes that happen during startup as well as
+                # crashes that happen long after startup succeeded.
+                self._spawn_watchdog()
 
                 # Wait for server to be ready
                 if self._wait_for_server():
@@ -170,6 +297,35 @@ class BaseServerManager(ABC):
             except Exception as e:
                 self._logger.error(f"Failed to start server: {e}")
                 return False
+
+    def _stream_pipe(self, pipe, log_fn, is_stderr: bool) -> None:
+        """Drain a subprocess pipe line-by-line.
+
+        Each line is logged via ``log_fn`` and, if it came from stderr,
+        also appended to the ring buffer that the watchdog dumps on
+        unexpected exit.  We log stderr at INFO (not DEBUG) because that is
+        where llama.cpp emits GGML_ASSERT / CUDA errors; losing those is
+        what motivated this change.
+        """
+        try:
+            if not pipe:
+                return
+            with pipe:
+                for line in iter(pipe.readline, ""):
+                    if not line:
+                        continue
+                    stripped = line.rstrip()
+                    if is_stderr:
+                        # Bounded — deque(maxlen=...) drops oldest.
+                        self._stderr_buffer.append(stripped)
+                    try:
+                        log_fn(stripped)
+                    except Exception:
+                        # Logging must never kill the drain thread.
+                        pass
+        except Exception:
+            # best-effort - avoid crashing background drainers
+            pass
 
     def _retry_with_reduced_context(self, original_args: List[str]) -> bool:
         """Retry server start with reduced num_ctx after SIGSEGV.
@@ -225,9 +381,12 @@ class BaseServerManager(ABC):
                 f"(reduced from {original_ctx})"
             )
 
-            # Kill the crashed process
+            # Kill the crashed process.  Mark this kill as intentional so the
+            # previous process's watchdog doesn't trigger a spurious
+            # "process_died" purge / metric on us.
             if self.process:
                 try:
+                    self._intentional_stop = True
                     self.process.kill()
                     self.process.wait(timeout=5)
                 except Exception:
@@ -243,33 +402,29 @@ class BaseServerManager(ABC):
             )
             self.pid = self.process.pid
 
-            # Stream output
-            def _stream_pipe(pipe, log_fn):
-                try:
-                    if not pipe:
-                        return
-                    with pipe:
-                        for line in iter(pipe.readline, ""):
-                            if line:
-                                log_fn(line.rstrip())
-                except Exception:
-                    pass
+            # Reset for fresh process — clear stale buffer + intentional flag
+            # so the new watchdog starts clean.
+            self._intentional_stop = False
+            self._stderr_buffer.clear()
 
             if self.process.stdout:
                 t_out = threading.Thread(
-                    target=_stream_pipe,
-                    args=(self.process.stdout, self._logger.debug),
+                    target=self._stream_pipe,
+                    args=(self.process.stdout, self._logger.debug, False),
                     daemon=True,
                 )
                 t_out.start()
 
             if self.process.stderr:
                 t_err = threading.Thread(
-                    target=_stream_pipe,
-                    args=(self.process.stderr, self._logger.debug),
+                    target=self._stream_pipe,
+                    args=(self.process.stderr, self._logger.info, True),
                     daemon=True,
                 )
                 t_err.start()
+
+            # New process → new watchdog.
+            self._spawn_watchdog()
 
             if self._wait_for_server():
                 self._logger.info(
@@ -439,6 +594,12 @@ class BaseServerManager(ABC):
 
             try:
                 self._logger.info(f"Stopping server on port {self.port}")
+
+                # Tell the watchdog this exit is expected, BEFORE we send
+                # any signal — otherwise the watchdog races us, sees the
+                # SIGTERM exit code, and (defensively) logs a "died
+                # unexpectedly" warning + emits a process_died metric.
+                self._intentional_stop = True
 
                 # Send SIGTERM for graceful shutdown
                 self.process.terminate()
