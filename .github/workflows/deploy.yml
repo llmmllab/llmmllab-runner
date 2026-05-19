@@ -2,7 +2,7 @@ name: Deploy Runner
 
 on:
   push:
-    branches: [main]
+    branches: [main, test/round1]
 
 jobs:
   deploy:
