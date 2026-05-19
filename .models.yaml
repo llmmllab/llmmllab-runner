@@ -33,7 +33,7 @@
     max_tokens: 65536
     n_parts: -1
     batch_size: 2048
-    micro_batch_size: 2048
+    micro_batch_size: 512
     n_gpu_layers: -1
     think: False
     reasoning_budget: 8192
