@@ -44,7 +44,7 @@
     # ctx_size_reduction_limit: 1.0
     # slot_prompt_similarity: 0
     parallel: 4
-    split_mode: "row"
+    split_mode: "layer"
   pipeline: llama
   lora_weights: []
   provider: llama_cpp
