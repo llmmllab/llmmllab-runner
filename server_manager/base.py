@@ -185,14 +185,23 @@ class BaseServerManager(ABC):
         """
         import re
 
-        ctx_match = re.search(r'--ctx-size\s+(\d+)', ' '.join(original_args))
+        # Parse original ctx-size from args - handle both "--ctx-size N" and "--ctx-size=N" formats
+        args_str = ' '.join(original_args)
+        ctx_match = re.search(r'--ctx-size\s*=?\s*(\d+)', args_str)
         if not ctx_match:
             self._logger.warning(
                 "Cannot reduce context: --ctx-size not found in server args"
             )
             return False
 
-        original_ctx = int(ctx_match.group(1))
+        original_ctx_str = ctx_match.group(1)
+        try:
+            original_ctx = int(original_ctx_str)
+        except ValueError:
+            self._logger.warning(
+                f"Invalid ctx-size value '{original_ctx_str}', using default 90000"
+            )
+            original_ctx = 90000
         self._logger.warning(
             f"Server crashed with SIGSEGV (exit code -11). "
             f"Retrying with reduced context window (original: {original_ctx})"
@@ -230,6 +239,9 @@ class BaseServerManager(ABC):
                 except Exception:
                     pass
 
+            # Ensure retry_args is properly formatted as a list of strings
+            retry_args = [str(arg) for arg in retry_args]
+            
             self.process = subprocess.Popen(
                 retry_args,
                 stdout=subprocess.PIPE,
