@@ -177,29 +177,32 @@ Returns GPU stats, active server count, and loaded models.
 |--------|------|-------------|
 | `*` | `/v1/server/{server_id}/{path}` | Forward any request to the upstream llama.cpp server |
 
-### Slot Persistence (KV Cache)
+### Slot Pinning + KV Cache Persistence
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `POST` | `/v1/server/{server_id}/slots/{slot_id}/save` | Save KV cache slot to disk |
-| `POST` | `/v1/server/{server_id}/slots/{slot_id}/restore` | Restore KV cache slot from disk |
+| `POST` | `/v1/server/{server_id}/slots/{slot_id}/save` | Save KV cache slot to disk (manual) |
+| `POST` | `/v1/server/{server_id}/slots/{slot_id}/restore` | Restore KV cache slot from disk (manual) |
 
-Slot persistence eliminates redundant prefill computation by saving a conversation's KV cache to disk between requests. When enabled, the runner **automatically** restores and saves slots on every chat completion — no manual save/restore calls are needed.
+Slot persistence eliminates redundant prefill computation by saving a conversation's KV cache to disk and pinning each session to a stable slot. When enabled, the runner **automatically** manages slot assignment, save-on-evict, and restore-before-use — no manual calls are required.
 
 **How it works:**
 
 1. Set `SLOT_SAVE_DIR` to a writable directory (e.g. `/slots`)
 2. Send chat completion requests with an `X-Session-ID` header
-3. The runner automatically restores the slot before forwarding and saves it after the response completes
-4. Subsequent requests with the same session ID resume from the saved KV cache, skipping prompt reprocessing
+3. The runner pins each session to a llama.cpp slot via a per-upstream-server LRU and injects `id_slot`, `cache_prompt=true`, and `n_cache_reuse=256` into the request body so llama.cpp respects the pin and reuses the prefix cache
+4. When a session is displaced from its slot by another session, the displaced session's KV state is saved to disk; the incoming session's state is restored if available
 
 **Key details:**
 
-- **Session-to-slot mapping**: The runner hashes the `X-Session-ID` to assign a consistent slot index (`md5(session_id) % num_slots`). With `parallel: 4`, up to 4 concurrent sessions per server can each maintain separate KV caches.
-- **Slot file naming**: Files are named `slot_{session_id}.bin` under `SLOT_SAVE_DIR`
-- **Auto-discovery**: The runner queries the upstream `/slots` endpoint to discover the number of available slots and caches the result per server
-- **Actual slot tracking**: Since llama.cpp doesn't report which slot it used in the response, the runner compares token counts before and after each request to identify the actual slot. The mapping is cached per session for subsequent requests.
-- **Non-streaming requests**: Even non-streaming chat completions are internally proxied as streaming to keep the slot pinned during the save operation, then converted back to JSON for the client.
+- **Per-server LRU (`SlotLRU`)** — Capacity equals the model's `--parallel`. The first N distinct sessions claim slots `0..N-1`; further sessions evict the least-recently-used session and reuse its slot.
+- **Session pinning** — Once assigned, a session stays in the same slot as long as it remains within the LRU window. This makes llama.cpp's slot-local prompt cache hit reliably across turns.
+- **KV cache reuse** — The runner passes `--cache-reuse 256` to `llama-server` (configurable per-model via `parameters.cache_reuse` in `.models.yaml`) so llama.cpp can KV-shift to reuse near-prefix matches. The proxy sets the matching `n_cache_reuse` request field.
+- **Slot file naming** — `slot_{session_id}_{model_id}.bin` under `SLOT_SAVE_DIR`. Keyed by `model_id` (not the ephemeral `server_id`) so files survive runner restarts and a redeploy doesn't strand the KV state on disk.
+- **Pooled httpx clients** — One `httpx.AsyncClient` per upstream server, sized off `--parallel`, with TCP keep-alive. The pool is closed cleanly on shutdown before subprocesses are terminated.
+- **Non-streaming requests**: Even non-streaming chat completions are internally proxied as streaming to keep the slot pinned during save, then converted back to JSON for the client.
+
+**Diagnostic: prompt fingerprint logging.** For each chat completion the proxy hashes the request body at offsets `[1K, 2K, 4K, 8K, 12K, 16K, 20K, 24K, 32K, 48K, 64K, 96K, 128K]` and logs one of `FIRST`, `STABLE`, or `DIVERGED at byte N`. This is used to verify the upstream caller is sending byte-stable prompts across turns. Counterpart Prometheus metrics: `prompt_fingerprint_total{kind}` and `prompt_first_divergence_byte`.
 
 **Manual save/restore API:**
 
@@ -232,6 +235,8 @@ See [Configuration](#configuration) for details.
 | Method | Path | Description |
 |--------|------|-------------|
 | `GET` | `/health` | Health check with GPU stats and active server count |
+| `GET` | `/v1/status` | `{"startup_epoch": <unix_ms>, "now": <unix_ms>}` — fixed per process; callers detect runner restarts when `startup_epoch` changes and invalidate any cached `server_id` handles |
+| `GET` | `/metrics` | Prometheus exposition (see [Metrics](#metrics)) |
 
 ## Configuration
 
@@ -250,7 +255,7 @@ All configuration is environment-variable-driven via `.env`:
 | `SERVER_PORT_RANGE_END` | `8900` | End of dynamic port range |
 | `PROXY_TIMEOUT` | `600` | Upstream proxy timeout in seconds |
 | `GPU_POWER_CAP_PCT` | `85` | GPU power cap as % of default TDP (0 to disable) |
-| `SLOT_SAVE_DIR` | (empty) | Directory for persistent KV cache slots. When set, passes `--slot-save-path` to llama-server. Enables automatic slot save/restore on chat completions with `X-Session-ID` header. See [Slot Persistence](#slot-persistence-kv-cache) below. |
+| `SLOT_SAVE_DIR` | (empty) | Directory for persistent KV cache slots. When set, passes `--slot-save-path` to llama-server. Enables automatic save-on-evict / restore-before-use on chat completions with `X-Session-ID` header. See [Slot Pinning + KV Cache Persistence](#slot-pinning--kv-cache-persistence). |
 | `SLOT_NO_MMAP` | `true` | Pass `--no-mmap` when `SLOT_SAVE_DIR` is set. Prevents OS from evicting mmap pages between save/restore. |
 | `SLOT_SWA_FULL` | `true` | Pass `--swa-full` when `SLOT_SAVE_DIR` is set. Required for SWA models (e.g. Qwen 3.5) to correctly persist their KV cache. |
 | `SLOT_INACTIVE_MAX_AGE_MIN` | `12` | Delete slot files for sessions inactive for this many minutes. Uses the proxy's session-activity tracker. Set to `0` to disable. |
@@ -292,7 +297,53 @@ Key fields:
 - **`id`** — Unique identifier used in `/v1/server/create` requests
 - **`details.gguf_file`** — Absolute path to the GGUF model file on disk
 - **`parameters`** — Passed as command-line args to `llama-server` (num_ctx, n_gpu_layers, batch_size, etc.)
+- **`parameters.cache_reuse`** — Minimum chunk size for KV-shift prefix reuse (`--cache-reuse`). Defaults to `256` when unset. Required for per-session prompt-cache reuse to take effect.
+- **`parameters.split_mode`** — `layer` or `row`. Use `layer` if `--parallel > 1`: `row` triggers `GGML_ASSERT(!(split && ne02 < ne12))` in `ggml-cuda.cu` when two slots pack into the same ubatch and takes the whole `llama-server` process down.
+- **`parameters.micro_batch_size`** — Keep meaningfully smaller than `batch_size` (e.g. `512` vs `2048`) when running multiple slots so llama.cpp can interleave tokens from multiple slots inside each micro-batch instead of letting one slot monopolize prefill.
 - **`lora_weights`** — Optional list of LoRA adapters to load
+
+## Metrics
+
+The runner exposes Prometheus metrics at `/metrics`. Cardinality is intentionally bounded — no `session_id` labels.
+
+| Metric | Type | Labels | Description |
+|---|---|---|---|
+| `slot_resolutions_total` | counter | `slot_id`, `evicted` | One per `SlotLRU.touch()`; `evicted=true` when the touch displaced an existing session |
+| `slot_lru_size` | gauge | `server_id` | Current SlotLRU population per upstream server |
+| `slot_save_total` | counter | `slot_id`, `outcome` | Save-on-evict outcomes (`success` / `failure`) |
+| `slot_restore_total` | counter | `slot_id`, `outcome` | Restore-before-use outcomes |
+| `slot_save_duration_seconds` | histogram | — | Wall-clock of the upstream `/slots/{id}?action=save` call |
+| `slot_restore_duration_seconds` | histogram | — | Wall-clock of the upstream `/slots/{id}?action=restore` call |
+| `prompt_fingerprint_total` | counter | `kind` (`first`/`stable`/`diverged`) | Prompt prefix stability across turns of a session |
+| `prompt_first_divergence_byte` | histogram | — | Offset of first divergence; lower buckets = worse cache reuse |
+| `prompt_body_bytes` | histogram | — | Request body size distribution |
+| `llama_server_evictions_total` | counter | `reason` | `reason="process_died"` fires from the per-subprocess watchdog on unexpected exit |
+
+## Resilience
+
+### Process-death watchdog
+
+Each llama.cpp subprocess has a watchdog thread (`server_manager/base.py::_watchdog_run`) that waits on the process. On unexpected exit — GGML_ASSERT, SIGKILL, segfault, OOM — the watchdog:
+
+1. Snapshots the last 50 lines from a 200-line stderr ring buffer (drained at INFO so live CUDA errors surface).
+2. Logs a WARNING with the stderr tail and exit code.
+3. Calls `ServerCache.purge_dead_server(server_id)` to drop the cache entry immediately, so the proxy stops routing to the dead port instead of 502-storming until the 30-60 minute TTL eviction.
+4. Bumps `llama_server_evictions_total{reason="process_died"}`.
+
+An `_intentional_stop` flag, set by `stop()`, the reduced-context retry path, and the cache eviction path, distinguishes "we asked the process to exit" from "it died." The watchdog is a no-op for intentional stops.
+
+### Shutdown ordering
+
+`app.py` lifespan tears down in this order on shutdown:
+
+1. Cancel background tasks (eviction, slot cleanup, metrics, etc.) so nothing borrows new connections.
+2. `aclose_all_clients()` — close the pooled per-upstream-server `httpx.AsyncClient` instances so TCP keep-alive connections drain cleanly.
+3. `server_cache.stop_all()` — terminate llama.cpp subprocesses last.
+
+### Restart resilience
+
+- **Slot files survive restarts** — Slot save files are keyed by `model_id`, not the ephemeral per-subprocess `server_id`. A pod restart that re-launches the same model picks up the previous KV state from disk.
+- **api-side handle invalidation** — `GET /v1/status` returns a `startup_epoch` captured at module import. The api polls this; when it changes, it invalidates cached `server_id` handles and reacquires them transparently.
 
 ## Docker
 
@@ -467,7 +518,7 @@ Returns per-GPU memory usage, active server list with ports and use counts, and 
 - **SSE streaming** — The proxy detects streaming requests by checking the `stream` field in the JSON body. If the client disconnects, `response.aclose()` closes the upstream TCP connection, which aborts llama.cpp generation.
 - **Port allocation** — `BaseServerManager._find_available_port()` binds to 127.0.0.1 without `SO_REUSEADDR` to avoid TIME_WAIT collisions. Ports are allocated sequentially from 8001.
 - **VRAM eviction** — When a new model is requested and VRAM is insufficient, the soft eviction path stops idle servers oldest-first until enough memory is free. The model size estimate is `details.size + 128MB` overhead.
-- **Slot persistence** — The proxy router in `proxy/router.py` automatically handles slot save/restore for chat completions with an `X-Session-ID` header. Slot save happens in the `finally` block of `upstream_iterator()` (streaming) or after buffering the response (non-streaming), before closing the upstream connection. The `actual_slot_id` is discovered by diffing slot token counts before/after the request. Slot errors must never break the main request flow — all operations are wrapped in try/except.
+- **Slot pinning + persistence** — `proxy/router.py` pins each `X-Session-ID` to a llama.cpp slot via a per-upstream-server `SlotLRU` (capacity = `--parallel`). Before forwarding, the proxy injects `id_slot`, `cache_prompt=true`, and `n_cache_reuse=256` into the upstream JSON body. When a session is evicted from its slot to make room for another, the proxy saves the displaced KV state to disk and (on the next forward for the incoming session) restores from disk if available. Slot files are keyed by `model_id` so they survive runner restarts. Slot errors must never break the main request flow — all operations are wrapped in try/except.
 - **Session ID middleware** — `SessionIdMiddleware` in `app.py` extracts the `X-Session-ID` header into a context variable (`_session_id_ctx`), making it available throughout the request lifecycle, including in structlog entries.
 
 ## License
