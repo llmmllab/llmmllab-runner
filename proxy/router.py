@@ -156,15 +156,46 @@ _known_files_loaded: bool = False
 _known_files_lock = asyncio.Lock()
 
 
+def _stable_model_key(server_id: str) -> str:
+    """Resolve a server_id to a *stable* identifier that survives runner restarts.
+
+    ``server_id`` is an ephemeral UUID assigned to each llama.cpp subprocess
+    — it changes on every runner pod restart even when the same model is
+    loaded.  Using it in slot-save filenames causes saved KV state to be
+    orphaned across restarts.
+
+    Instead, look up the ``model_id`` from ``server_cache``.  Model IDs are
+    deterministic (driven by ``.models.yaml``) so the resulting filename
+    survives restarts.  We sanitize the model_id to be filesystem-safe
+    (no slashes, no colons).
+
+    On any lookup failure (cache not populated yet, server_id unknown)
+    fall back to ``server_id`` — restore won't hit but at least no crash.
+    """
+    if not server_id:
+        return ""
+    try:
+        from cache import server_cache  # local import to avoid cycles at module-load
+        entry = server_cache._servers.get(server_id)
+        if entry is not None:
+            model_id = getattr(entry, "model_id", None) or server_id
+            # Filesystem-safe: replace path separators and ":" (HF-style).
+            return str(model_id).replace("/", "_").replace(":", "_").replace("\\", "_")
+    except Exception:
+        pass
+    return server_id
+
+
 def _session_file_key(session_id: str, server_id: str) -> str:
     """Identifier we record in the in-memory `known files` set.
 
     Mirrors the on-disk filename (basename without extension) produced by
     ``_slot_file_path`` so we can quickly answer "does a save file exist for
-    this (session, server)?" without hitting the filesystem.
+    this (session, model)?" without hitting the filesystem.
     """
-    if server_id:
-        return f"slot_{session_id}_{server_id}"
+    model_key = _stable_model_key(server_id)
+    if model_key:
+        return f"slot_{session_id}_{model_key}"
     return f"slot_{session_id}"
 
 
@@ -425,11 +456,14 @@ def _sse_to_nonstreaming(chunks: bytes, model: str) -> Optional[Dict[str, Any]]:
 def _slot_file_path(session_id: str, server_id: str = "") -> str:
     """Build the absolute path for a session's slot cache file.
 
-    Includes server_id to prevent cross-model restore failures when a
-    session switches models (different layer counts produce incompatible files).
+    Uses the *model_id* (resolved via ``_stable_model_key``) rather than
+    the ephemeral ``server_id`` so the file survives runner restarts.
+    Different models still get different files (preventing cross-model
+    restore failures from incompatible tensor shapes).
     """
-    if server_id:
-        return f"{SLOT_SAVE_DIR}/slot_{session_id}_{server_id}.bin"
+    model_key = _stable_model_key(server_id)
+    if model_key:
+        return f"{SLOT_SAVE_DIR}/slot_{session_id}_{model_key}.bin"
     return f"{SLOT_SAVE_DIR}/slot_{session_id}.bin"
 
 
