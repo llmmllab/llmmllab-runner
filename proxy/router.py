@@ -7,35 +7,343 @@ Tracks server activity: increments use_count on request start, decrements
 when the response fully completes. This allows the cache eviction timer to
 fire based on actual request activity rather than external release calls.
 
-For chat completion requests with a session_id, automatically restores the
-KV cache slot before forwarding and saves it after the response drains,
-enabling persistent conversation state across requests.
+For chat completion requests with a session_id, this router pins each
+session to a llama.cpp slot via a per-server LRU map, eagerly injects
+``id_slot`` / ``cache_prompt`` / ``n_cache_reuse`` into the upstream body,
+and persists slot KV state to disk on LRU eviction so concurrent sessions
+sharing the same server share KV cache reuse benefits without colliding
+on slot 0.
 """
 
 import asyncio
-import hashlib
 import json
 import os
 import time
-from typing import Any, Dict, List, Optional
+from collections import OrderedDict
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 import httpx
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import Response, StreamingResponse
 
 from config import PROXY_TIMEOUT, SLOT_SAVE_DIR
+from middleware.prometheus_metrics import (
+    prompt_body_bytes,
+    prompt_fingerprint_total,
+    prompt_first_divergence_byte,
+    slot_lru_size,
+    slot_resolutions_total,
+    slot_restore_duration_seconds,
+    slot_restore_total,
+    slot_save_duration_seconds,
+    slot_save_total,
+)
 from utils.logging import llmmllogger, _session_id_ctx
 
 logger = llmmllogger.bind(component="proxy_router")
 
 router = APIRouter()
 
-# server_id -> number of slots (discovered from upstream /slots endpoint)
+# ---------------------------------------------------------------------------
+# Slot pinning state
+# ---------------------------------------------------------------------------
+
+# server_id -> number of slots (discovered from upstream /slots endpoint or
+# from --parallel)
 _num_slots_cache: Dict[str, int] = {}
-# session_id -> slot_id (discovered from first request response)
-_session_slot_cache: Dict[str, int] = {}
 # session_id -> last activity timestamp (for session-aware slot cleanup)
 _session_activity: Dict[str, float] = {}
+
+
+class SlotLRU:
+    """LRU map from session_id to slot_id for a single upstream server.
+
+    Slots are a fixed pool sized to ``--parallel`` (capacity).  The first
+    ``capacity`` distinct sessions claim slots 0..capacity-1.  After that,
+    inserting a new session evicts the least-recently-used session, freeing
+    its slot for reuse.
+
+    ``touch(session_id)`` returns ``(slot_id, evicted)`` where ``evicted`` is
+    ``None`` if no eviction happened, otherwise ``(evicted_session_id,
+    evicted_slot_id)``.  The caller is responsible for persisting the
+    evicted slot's KV state and restoring the new session's KV state.
+    """
+
+    def __init__(self, capacity: int) -> None:
+        self._capacity = max(1, int(capacity))
+        # session_id -> slot_id, ordered by recency (MRU at end)
+        self._map: "OrderedDict[str, int]" = OrderedDict()
+        # set of slot_ids currently in use
+        self._used_slots: Set[int] = set()
+        self._lock = asyncio.Lock()
+
+    @property
+    def capacity(self) -> int:
+        return self._capacity
+
+    async def touch(
+        self, session_id: str
+    ) -> Tuple[int, Optional[Tuple[str, int]]]:
+        """Insert or refresh a session and return its slot.
+
+        Returns ``(slot_id, evicted_session)`` where ``evicted_session`` is
+        ``(session_id, slot_id)`` if a session was evicted to make room,
+        otherwise ``None``.
+        """
+        async with self._lock:
+            if session_id in self._map:
+                slot_id = self._map.pop(session_id)
+                self._map[session_id] = slot_id
+                return slot_id, None
+
+            evicted: Optional[Tuple[str, int]] = None
+            if len(self._map) >= self._capacity:
+                old_session, old_slot = self._map.popitem(last=False)
+                self._used_slots.discard(old_slot)
+                evicted = (old_session, old_slot)
+                slot_id = old_slot
+            else:
+                # Allocate the lowest free slot id in [0, capacity)
+                slot_id = -1
+                for candidate in range(self._capacity):
+                    if candidate not in self._used_slots:
+                        slot_id = candidate
+                        break
+                if slot_id == -1:
+                    # Shouldn't happen — _used_slots should always have a free
+                    # slot when len(_map) < capacity — but be defensive.
+                    slot_id = len(self._map) % self._capacity
+
+            self._map[session_id] = slot_id
+            self._used_slots.add(slot_id)
+            return slot_id, evicted
+
+    async def peek(self, session_id: str) -> Optional[int]:
+        """Return the slot for ``session_id`` without touching recency."""
+        async with self._lock:
+            return self._map.get(session_id)
+
+
+# server_id -> SlotLRU (different llama.cpp instances have independent slot pools)
+_slot_lrus: Dict[str, SlotLRU] = {}
+_slot_lrus_lock = asyncio.Lock()
+
+
+async def _get_slot_lru(server_id: str, target_host: str) -> SlotLRU:
+    """Return the per-server SlotLRU, creating it lazily."""
+    lru = _slot_lrus.get(server_id)
+    if lru is not None:
+        return lru
+    async with _slot_lrus_lock:
+        lru = _slot_lrus.get(server_id)
+        if lru is not None:
+            return lru
+        num_slots = await _discover_num_slots(target_host, server_id)
+        lru = SlotLRU(capacity=num_slots)
+        _slot_lrus[server_id] = lru
+        logger.info(
+            "Created SlotLRU", server_id=server_id, capacity=num_slots
+        )
+        return lru
+
+
+# ---------------------------------------------------------------------------
+# Lazy startup scan of SLOT_SAVE_DIR — what session files exist on disk
+# ---------------------------------------------------------------------------
+
+_known_session_files: Set[str] = set()
+_known_files_loaded: bool = False
+_known_files_lock = asyncio.Lock()
+
+
+def _session_file_key(session_id: str, server_id: str) -> str:
+    """Identifier we record in the in-memory `known files` set.
+
+    Mirrors the on-disk filename (basename without extension) produced by
+    ``_slot_file_path`` so we can quickly answer "does a save file exist for
+    this (session, server)?" without hitting the filesystem.
+    """
+    if server_id:
+        return f"slot_{session_id}_{server_id}"
+    return f"slot_{session_id}"
+
+
+async def _ensure_known_files_loaded() -> None:
+    """One-time inventory of SLOT_SAVE_DIR.
+
+    Populates ``_known_session_files`` with the basename (no extension) of
+    every ``*.bin`` file in SLOT_SAVE_DIR so subsequent requests can answer
+    "does a save exist for this session?" without a stat call.
+    """
+    global _known_files_loaded
+    if _known_files_loaded or not SLOT_SAVE_DIR:
+        return
+    async with _known_files_lock:
+        if _known_files_loaded:
+            return
+        try:
+            if os.path.isdir(SLOT_SAVE_DIR):
+                for name in os.listdir(SLOT_SAVE_DIR):
+                    if name.endswith(".bin"):
+                        _known_session_files.add(name[:-4])
+            logger.info(
+                "Inventoried SLOT_SAVE_DIR",
+                slot_save_dir=SLOT_SAVE_DIR,
+                file_count=len(_known_session_files),
+            )
+        except OSError as e:
+            logger.warning(
+                "Failed to inventory SLOT_SAVE_DIR",
+                slot_save_dir=SLOT_SAVE_DIR,
+                error=str(e),
+            )
+        _known_files_loaded = True
+
+
+def _record_saved_file(session_id: str, server_id: str) -> None:
+    """Refresh the in-memory set after we write a new save file."""
+    _known_session_files.add(_session_file_key(session_id, server_id))
+
+
+def _save_file_exists(session_id: str, server_id: str) -> bool:
+    """Cheap check — is there a known save file for this session?"""
+    return _session_file_key(session_id, server_id) in _known_session_files
+
+
+# ---------------------------------------------------------------------------
+# Prompt-divergence diagnostic (temporary).  Logs at which byte offset the
+# request body first differs from the previous request body for the same
+# session, so we can pin down why llama.cpp's prefix cache stops matching
+# past a certain depth.  Cheap enough to leave on; remove once the
+# divergence point is identified and fixed.
+# ---------------------------------------------------------------------------
+
+import hashlib as _hashlib  # local alias — hashlib is also imported lazily below
+
+# session_id -> list of (offset, md5_short) snapshots from the previous request
+_session_prompt_hashes: Dict[str, List[Tuple[int, str]]] = {}
+
+# Byte offsets at which we hash the prompt body.  Spans the range where we
+# observed cache divergence (between ~16K and ~24K llama.cpp checkpoints).
+_PROMPT_HASH_OFFSETS: Tuple[int, ...] = (
+    1024, 2048, 4096, 8192, 12288, 16384, 20480, 24576,
+    32768, 49152, 65536, 98304, 131072,
+)
+
+
+def _hash_prefix(data: bytes, offset: int) -> str:
+    """Short MD5 (first 8 hex chars) of ``data[:offset]``.
+
+    Returns an empty string if the body is shorter than ``offset``.
+    """
+    if len(data) < offset:
+        return ""
+    return _hashlib.md5(data[:offset]).hexdigest()[:8]
+
+
+def _log_prompt_divergence(session_id: str, body: bytes) -> None:
+    """Compare body prefix-hashes to the prior request for this session.
+
+    Logs one structured INFO line per request with: body length, all
+    prefix hashes, and (if applicable) the first byte offset at which the
+    hash differs from the previous request.
+    """
+    if not session_id or not body:
+        return
+    new_hashes: List[Tuple[int, str]] = [
+        (off, _hash_prefix(body, off)) for off in _PROMPT_HASH_OFFSETS
+    ]
+    prev = _session_prompt_hashes.get(session_id)
+    first_div: Optional[int] = None
+    if prev:
+        for (off_new, h_new), (off_prev, h_prev) in zip(new_hashes, prev):
+            # Both must have data at this offset to be comparable.
+            if not h_new or not h_prev:
+                continue
+            if h_new != h_prev:
+                first_div = off_new
+                break
+    _session_prompt_hashes[session_id] = new_hashes
+
+    # Build a compact representation: "1024:abcd1234,2048:..."
+    hash_str = ",".join(f"{off}:{h or '-'}" for off, h in new_hashes)
+    prompt_body_bytes.observe(len(body))
+    if prev is None:
+        prompt_fingerprint_total.labels(kind="first").inc()
+        logger.info(
+            "Prompt fingerprint (first turn)",
+            session_id=session_id,
+            body_len=len(body),
+            hashes=hash_str,
+        )
+    elif first_div is None:
+        prompt_fingerprint_total.labels(kind="stable").inc()
+        logger.info(
+            "Prompt fingerprint (prefix STABLE across all checkpoints)",
+            session_id=session_id,
+            body_len=len(body),
+            hashes=hash_str,
+        )
+    else:
+        prompt_fingerprint_total.labels(kind="diverged").inc()
+        prompt_first_divergence_byte.observe(first_div)
+        logger.info(
+            "Prompt fingerprint (DIVERGED from previous turn)",
+            session_id=session_id,
+            body_len=len(body),
+            first_divergence_byte=first_div,
+            hashes=hash_str,
+            prev_hashes=",".join(f"{off}:{h or '-'}" for off, h in prev),
+        )
+
+
+# ---------------------------------------------------------------------------
+# Per-upstream-server httpx.AsyncClient pool
+# ---------------------------------------------------------------------------
+
+_http_clients: Dict[str, httpx.AsyncClient] = {}
+_http_clients_lock = asyncio.Lock()
+
+
+async def _get_http_client(target_host: str, parallel: int) -> httpx.AsyncClient:
+    """Return (and lazily create) the shared httpx client for an upstream."""
+    client = _http_clients.get(target_host)
+    if client is not None and not client.is_closed:
+        return client
+    async with _http_clients_lock:
+        client = _http_clients.get(target_host)
+        if client is not None and not client.is_closed:
+            return client
+        limits = httpx.Limits(
+            max_connections=max(parallel * 4, 4),
+            max_keepalive_connections=max(parallel, 2),
+        )
+        client = httpx.AsyncClient(timeout=PROXY_TIMEOUT, limits=limits)
+        _http_clients[target_host] = client
+        logger.info(
+            "Created upstream httpx client",
+            target_host=target_host,
+            max_connections=limits.max_connections,
+            max_keepalive=limits.max_keepalive_connections,
+        )
+        return client
+
+
+async def aclose_all_clients() -> None:
+    """Close all pooled upstream clients.  Call from app shutdown."""
+    async with _http_clients_lock:
+        clients = list(_http_clients.values())
+        _http_clients.clear()
+    for c in clients:
+        try:
+            await c.aclose()
+        except Exception as e:
+            logger.debug("Error closing upstream client", error=str(e))
+
+
+# ---------------------------------------------------------------------------
+# Session activity tracking (consumed by app.py's slot cleanup task)
+# ---------------------------------------------------------------------------
 
 
 def touch_session_activity(session_id: str) -> None:
@@ -46,6 +354,11 @@ def touch_session_activity(session_id: str) -> None:
 def get_session_activity(session_id: str) -> Optional[float]:
     """Get the last activity timestamp for a session, or None if unknown."""
     return _session_activity.get(session_id)
+
+
+# ---------------------------------------------------------------------------
+# SSE → non-streaming JSON conversion (unchanged)
+# ---------------------------------------------------------------------------
 
 
 def _sse_to_nonstreaming(chunks: bytes, model: str) -> Optional[Dict[str, Any]]:
@@ -120,85 +433,136 @@ def _slot_file_path(session_id: str, server_id: str = "") -> str:
     return f"{SLOT_SAVE_DIR}/slot_{session_id}.bin"
 
 
+# Legacy hash-based resolver kept for tests that still import it.
 def _resolve_slot_id(session_id: str, server_id: str, num_slots: int) -> int:
-    """Map a session_id to a slot index via hash.
+    """Deprecated: use SlotLRU. Retained only for backward-compat with tests."""
+    import hashlib
 
-    Ensures the same session always uses the same slot across requests.
-    """
-    return int(hashlib.md5(session_id.encode()).hexdigest(), 16) % num_slots
+    return int(hashlib.md5(session_id.encode()).hexdigest(), 16) % max(num_slots, 1)
 
 
-async def _restore_slot(target_host: str, slot_id: int, slot_file: str) -> bool:
+# ---------------------------------------------------------------------------
+# Slot save / restore (used by save-on-evict and the legacy non-streaming path)
+# ---------------------------------------------------------------------------
+
+
+async def _restore_slot(
+    target_host: str,
+    slot_id: int,
+    slot_file: str,
+    session_id: str = "",
+    client: Optional[httpx.AsyncClient] = None,
+) -> bool:
     """Restore a KV cache slot from disk before a chat completion.
 
     Returns True if the slot was successfully restored, False otherwise.
-    Silently skips if the slot file doesn't exist (first request for session).
-    Deletes the slot file on failure (e.g. model mismatch) to prevent repeated errors.
+    Logs one INFO line per call with session_id, slot_id, action, and result.
     """
-    if not os.path.exists(slot_file):
-        logger.debug("Slot file does not exist, skipping restore", slot_file=slot_file)
-        return False
+    own_client = False
+    if client is None:
+        client = httpx.AsyncClient(timeout=30.0)
+        own_client = True
+    start = time.monotonic()
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.post(
-                f"{target_host}/slots/{slot_id}?action=restore",
-                json={"filename": os.path.basename(slot_file)},
-            )
-            logger.info(
-                "Slot restore response",
-                slot_file=slot_file,
-                slot_id=slot_id,
-                status=resp.status_code,
-                body=resp.text[:200],
-            )
-            if resp.status_code == 200:
-                return True
-            # Restore failed (e.g. layer count mismatch, corrupt file) — delete
-            # the stale file so subsequent requests don't hit the same error.
-            logger.warning(
-                "Slot restore failed — deleting stale slot file",
-                slot_file=slot_file,
-                slot_id=slot_id,
-                status=resp.status_code,
-                body=resp.text[:200],
-            )
-            try:
-                os.remove(slot_file)
-            except OSError:
-                pass
-            return False
+        resp = await client.post(
+            f"{target_host}/slots/{slot_id}?action=restore",
+            json={"filename": os.path.basename(slot_file)},
+        )
+        try:
+            body = resp.json()
+        except Exception:
+            body = {}
+        n_restored = body.get("n_restored") if isinstance(body, dict) else None
+        ok = resp.status_code == 200
+        slot_restore_total.labels(
+            slot_id=str(slot_id),
+            outcome="success" if ok else "failure",
+        ).inc()
+        slot_restore_duration_seconds.observe(time.monotonic() - start)
+        logger.info(
+            "Slot restore",
+            session_id=session_id,
+            slot_id=slot_id,
+            action="restore",
+            slot_file=os.path.basename(slot_file),
+            status=resp.status_code,
+            n_restored=n_restored,
+        )
+        return ok
     except Exception as e:
+        slot_restore_total.labels(slot_id=str(slot_id), outcome="failure").inc()
+        slot_restore_duration_seconds.observe(time.monotonic() - start)
         logger.warning(
-            "Slot restore failed", slot_file=slot_file, slot_id=slot_id, error=str(e)
+            "Slot restore failed",
+            session_id=session_id,
+            slot_id=slot_id,
+            action="restore",
+            slot_file=os.path.basename(slot_file),
+            error=str(e),
         )
         return False
+    finally:
+        if own_client:
+            await client.aclose()
 
 
-async def _save_slot(target_host: str, slot_id: int, slot_file: str) -> None:
-    """Save the KV cache slot to disk after a chat completion."""
-    logger.info(
-        "Attempting slot save",
-        target_host=target_host,
-        slot_id=slot_id,
-        slot_file=slot_file,
-    )
+async def _save_slot(
+    target_host: str,
+    slot_id: int,
+    slot_file: str,
+    session_id: str = "",
+    client: Optional[httpx.AsyncClient] = None,
+) -> bool:
+    """Save the KV cache slot to disk.
+
+    Returns True on success.  Logs one INFO line per call.
+    """
+    own_client = False
+    if client is None:
+        client = httpx.AsyncClient(timeout=30.0)
+        own_client = True
+    start = time.monotonic()
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.post(
-                f"{target_host}/slots/{slot_id}?action=save",
-                json={"filename": os.path.basename(slot_file)},
-            )
-            logger.info(
-                "Slot save response",
-                slot_file=slot_file,
-                slot_id=slot_id,
-                status=resp.status_code,
-                body=resp.text[:200],
-            )
-    except Exception as e:
-        logger.warning(
-            "Slot save failed", slot_file=slot_file, slot_id=slot_id, error=str(e)
+        resp = await client.post(
+            f"{target_host}/slots/{slot_id}?action=save",
+            json={"filename": os.path.basename(slot_file)},
         )
+        try:
+            body = resp.json()
+        except Exception:
+            body = {}
+        n_saved = body.get("n_saved") if isinstance(body, dict) else None
+        ok = resp.status_code == 200
+        slot_save_total.labels(
+            slot_id=str(slot_id),
+            outcome="success" if ok else "failure",
+        ).inc()
+        slot_save_duration_seconds.observe(time.monotonic() - start)
+        logger.info(
+            "Slot save",
+            session_id=session_id,
+            slot_id=slot_id,
+            action="save",
+            slot_file=os.path.basename(slot_file),
+            status=resp.status_code,
+            n_saved=n_saved,
+        )
+        return ok
+    except Exception as e:
+        slot_save_total.labels(slot_id=str(slot_id), outcome="failure").inc()
+        slot_save_duration_seconds.observe(time.monotonic() - start)
+        logger.warning(
+            "Slot save failed",
+            session_id=session_id,
+            slot_id=slot_id,
+            action="save",
+            slot_file=os.path.basename(slot_file),
+            error=str(e),
+        )
+        return False
+    finally:
+        if own_client:
+            await client.aclose()
 
 
 async def _discover_num_slots(target_host: str, server_id: str) -> int:
@@ -228,63 +592,66 @@ async def _discover_num_slots(target_host: str, server_id: str) -> int:
     return 1
 
 
-async def _find_used_slot(
-    target_host: str, num_slots: int, before_tokens: Dict[int, int] | None = None
-) -> int | None:
-    """Find which slot llama.cpp actually used by querying /slots.
+# ---------------------------------------------------------------------------
+# Body injection helper
+# ---------------------------------------------------------------------------
 
-    llama.cpp doesn't send x-slot-id in response headers, so we discover
-    the used slot by comparing token counts before and after the request.
-    If no baseline is provided, falls back to the slot that's processing.
+
+def _inject_slot_body(
+    body: bytes,
+    slot_id: int,
+    *,
+    cache_prompt: bool = True,
+    n_cache_reuse: int = 256,
+) -> Tuple[bytes, bool]:
+    """Inject id_slot / cache_prompt / n_cache_reuse into the JSON body.
+
+    Returns ``(new_body, ok)``.  ``ok`` is False if the body wasn't JSON;
+    the original body is returned unchanged in that case.
+
+    Caller-provided values for any of the three keys are preserved.
     """
+    if not body:
+        return body, False
     try:
-        async with httpx.AsyncClient(timeout=3.0) as client:
-            resp = await client.get(f"{target_host}/slots")
-            if resp.status_code == 200:
-                slots = resp.json()
-                if before_tokens is not None:
-                    # Find the slot whose token count changed
-                    for s in slots:
-                        sid = s.get("id")
-                        n = s.get("n_tokens", 0)
-                        if sid is not None and n != before_tokens.get(sid, 0):
-                            return sid
-                # Fallback: slot that's actively processing
-                for s in slots:
-                    if s.get("is_processing", False):
-                        return s.get("id")
-    except Exception as e:
-        logger.warning("Failed to find used slot", error=str(e))
-    return None
+        obj = json.loads(body)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return body, False
+    if not isinstance(obj, dict):
+        return body, False
+    if "id_slot" not in obj:
+        obj["id_slot"] = int(slot_id)
+    if "cache_prompt" not in obj:
+        obj["cache_prompt"] = cache_prompt
+    if "n_cache_reuse" not in obj:
+        obj["n_cache_reuse"] = n_cache_reuse
+    return json.dumps(obj).encode("utf-8"), True
+
+
+# ---------------------------------------------------------------------------
+# Streaming proxy
+# ---------------------------------------------------------------------------
 
 
 async def _stream_upstream(
-    client,
-    method,
-    url,
-    headers,
-    body,
-    server_id,
+    client: httpx.AsyncClient,
+    method: str,
+    url: str,
+    headers: Dict[str, str],
+    body: Optional[bytes],
+    server_id: str,
     target_host: str = "",
     slot_id: int = 0,
     slot_file: str = "",
     session_id: str = "",
-    before_tokens: Dict[int, int] | None = None,
 ):
-    """Stream response from upstream, keeping client open for the entire duration.
+    """Stream response from upstream using a shared httpx client.
 
-    Returns a StreamingResponse that maintains the upstream connection
-    until the downstream client is done consuming. Decrements the server's
-    use count when the stream fully completes or is abandoned.
-
-    When the downstream client disconnects mid-stream, ``aclose()`` is
-    called on the upstream response which closes the TCP connection to
-    llama.cpp, causing it to stop generating tokens for the abandoned slot.
-
-    If slot_file is provided, saves the KV cache slot after the stream drains.
+    The client is owned by the per-server pool and is NOT closed here.
+    Decrements the server's use_count when the stream fully drains or the
+    downstream client disconnects.  Save-on-evict + restore-before-request
+    happen outside this function, so we no longer save on stream drain.
     """
-    import asyncio
-
     try:
         response = await client.send(
             client.build_request(
@@ -296,15 +663,12 @@ async def _stream_upstream(
             stream=True,
         )
     except httpx.HTTPError as exc:
-        # Upstream crashed, refused connection, or timed out before sending
-        # any response headers. Decrement use_count here because the caller's
-        # finally block skips it when is_streaming is True.
         logger.error("Upstream server %s error before response: %s", server_id, exc)
-        await client.aclose()
         from app import server_cache
 
         server_cache.decrement_use(server_id)
         raise
+
     response_headers = dict(response.headers)
     status_code = response.status_code
     clean_headers = {
@@ -313,68 +677,15 @@ async def _stream_upstream(
         if k.lower() not in ("transfer-encoding", "content-length")
     }
 
-     # Track which slot llama.cpp actually used, discovered on first chunk
-    actual_slot_id = None
-
     async def upstream_iterator():
-        nonlocal actual_slot_id
         try:
             async for chunk in response.aiter_bytes():
-                # Discover the actual slot on the first chunk by diffing
-                # slot token counts against the pre-request baseline.
-                if before_tokens and actual_slot_id is None:
-                    actual_slot_id = await _find_used_slot(
-                        target_host,
-                        _num_slots_cache.get(server_id, 1),
-                        before_tokens,
-                    )
                 yield chunk
         finally:
-            # Save KV cache slot BEFORE closing the upstream connection.
-            # Use the SAME httpx client to reuse the TCP connection, which
-            # keeps the slot pinned in llama.cpp while we save.  Once
-            # aclose() fires, llama.cpp may free the slot and the save
-            # would get nothing or a 404.
-            if slot_file and target_host:
-                if actual_slot_id is None:
-                    actual_slot_id = slot_id
-                if session_id:
-                    _session_slot_cache[session_id] = actual_slot_id
-                logger.info(
-                    "Attempting slot save (streaming)",
-                    slot_file=slot_file,
-                    slot_id=actual_slot_id,
-                    target_host=target_host,
-                )
-                try:
-                    save_resp = await asyncio.wait_for(
-                        client.post(
-                            f"{target_host}/slots/{actual_slot_id}?action=save",
-                            json={"filename": os.path.basename(slot_file)},
-                        ),
-                        timeout=30.0,
-                    )
-                    logger.info(
-                        "Slot save response (streaming)",
-                        slot_file=slot_file,
-                        slot_id=actual_slot_id,
-                        status=save_resp.status_code,
-                        body=save_resp.text[:200],
-                    )
-                except asyncio.TimeoutError:
-                    logger.warning(
-                        "Slot save timed out (30s), skipping", slot_file=slot_file
-                    )
-                except asyncio.CancelledError:
-                    raise
-                except Exception as e:
-                    logger.warning("Slot save failed in finally", error=str(e))
-
-            # Close the upstream response (aborts connection if still open,
-            # which signals llama.cpp to stop generating for this slot)
-            await response.aclose()
-            await client.aclose()
-
+            try:
+                await response.aclose()
+            except Exception:
+                pass
             from app import server_cache
 
             server_cache.decrement_use(server_id)
@@ -384,6 +695,11 @@ async def _stream_upstream(
         status_code=status_code,
         headers=clean_headers,
     )
+
+
+# ---------------------------------------------------------------------------
+# Slot save / restore proxy endpoints (unchanged public surface)
+# ---------------------------------------------------------------------------
 
 
 @router.post("/v1/server/{server_id}/slots/{slot_id}/save")
@@ -468,6 +784,11 @@ async def restore_slot(request: Request, server_id: str, slot_id: int):
     }
 
 
+# ---------------------------------------------------------------------------
+# Main catch-all proxy route
+# ---------------------------------------------------------------------------
+
+
 @router.api_route(
     "/v1/server/{server_id}/{path:path}",
     methods=["GET", "POST", "PUT", "DELETE", "PATCH"],
@@ -481,8 +802,12 @@ async def proxy_request(request: Request, server_id: str, path: str):
 
     SSE responses are streamed without buffering.
 
-    For chat completions with a session_id, restores the KV cache slot
-    before forwarding and saves it after the response drains.
+    For chat completions with a session_id, this route:
+      1. Resolves (server, session) -> slot via a per-server LRU.
+      2. On LRU eviction, saves the evicted slot's KV state to disk.
+      3. If a saved file exists for the new session, restores it into the slot.
+      4. Injects id_slot / cache_prompt / n_cache_reuse into the upstream body
+         before forwarding.
     """
     from app import server_cache
 
@@ -492,78 +817,96 @@ async def proxy_request(request: Request, server_id: str, path: str):
 
     target_host = f"http://127.0.0.1:{entry.port}"
 
+    # Lazy startup scan of SLOT_SAVE_DIR on first proxy call
+    await _ensure_known_files_loaded()
+
     # Resolve session_id for slot persistence
     session_id = _session_id_ctx.get() or request.headers.get("x-session-id")
-    is_chat_completion = "chat/completions" in path
+    is_chat_completion = "chat/completions" in path or path.endswith("completion")
 
-    # Slot persistence state (only for chat completions with session_id)
-    slot_id = 0
-    slot_file = ""
-    if SLOT_SAVE_DIR and session_id and is_chat_completion:
-        num_slots = await _discover_num_slots(target_host, server_id)
-        slot_id = _resolve_slot_id(session_id, server_id, num_slots)
-        slot_file = _slot_file_path(session_id, server_id)
-        # Track session activity for cleanup decisions
+    # Resolve the slot via the per-server LRU.  This works even when
+    # SLOT_SAVE_DIR is unset — pinning + cache_prompt are still useful.
+    slot_id: Optional[int] = None
+    evicted_pair: Optional[Tuple[str, int]] = None
+    slot_lru: Optional[SlotLRU] = None
+    if session_id and is_chat_completion:
+        slot_lru = await _get_slot_lru(server_id, target_host)
+        slot_id, evicted_pair = await slot_lru.touch(session_id)
         touch_session_activity(session_id)
+        slot_resolutions_total.labels(
+            slot_id=str(slot_id),
+            evicted="true" if evicted_pair is not None else "false",
+        ).inc()
+        slot_lru_size.labels(server_id=server_id).set(len(slot_lru._map))
         logger.info(
-            "Slot persistence enabled",
+            "Resolved slot via LRU",
             session_id=session_id,
+            server_id=server_id,
             slot_id=slot_id,
-            slot_file=slot_file,
-            slot_save_dir=SLOT_SAVE_DIR,
-        )
-    elif is_chat_completion:
-        logger.info(
-            "Slot persistence skipped",
-            has_slot_dir=bool(SLOT_SAVE_DIR),
-            has_session_id=bool(session_id),
-            is_chat=is_chat_completion,
+            evicted=evicted_pair[0] if evicted_pair else None,
         )
 
-    # NOTE: Slot-busy rejection removed. The API's priority queue is the
-    # single gatekeeper for request admission — it checks slot availability
-    # via check_slot_availability() before releasing requests. Having the
-    # runner independently reject creates a race condition where the queue
-    # releases a request but the runner rejects it before it reaches the slot.
-    # llama.cpp itself will queue the request internally if all slots are busy.
-    remaining = path
+    # Determine whether persistence is active
+    persistence_on = bool(SLOT_SAVE_DIR) and session_id and is_chat_completion
+    num_slots = _num_slots_cache.get(server_id, 1)
+    pool_client = await _get_http_client(target_host, num_slots)
 
-    # Restore KV cache slot before chat completion
-    if slot_file:
-        # Use cached slot ID if we already know which slot llama.cpp assigned
-        restore_slot_id = _session_slot_cache.get(session_id, slot_id)
-        await _restore_slot(target_host, restore_slot_id, slot_file)
+    # Step 3a: Save the evicted session's slot, then restore the new
+    # session's file (if any).  Both are awaited so the upstream is in
+    # the right state before we forward.
+    if persistence_on and evicted_pair is not None:
+        old_session, old_slot = evicted_pair
+        old_file = _slot_file_path(old_session, server_id)
+        if await _save_slot(
+            target_host,
+            old_slot,
+            old_file,
+            session_id=old_session,
+            client=pool_client,
+        ):
+            _record_saved_file(old_session, server_id)
+
+    if persistence_on and slot_id is not None and session_id:
+        if _save_file_exists(session_id, server_id):
+            new_file = _slot_file_path(session_id, server_id)
+            await _restore_slot(
+                target_host,
+                slot_id,
+                new_file,
+                session_id=session_id,
+                client=pool_client,
+            )
 
     # Mark server as in-use during request
     server_cache.increment_use(server_id)
     is_streaming = False
-    slot_saved = False
 
     try:
         # Rewrite path: strip the /v1/server/{id} prefix
-        upstream_url = f"{target_host}/{remaining}"
+        upstream_url = f"{target_host}/{path}"
 
         # Read request body
         body = await request.body()
 
-        # Inject id_slot for slot persistence.
-        # Always assign the hash-based slot_id from the first request to
-        # prevent multiple sessions from colliding on slot 0.  Once the
-        # actual slot used by llama.cpp is discovered (via token diff),
-        # the cached mapping overrides for subsequent requests.
+        # Diagnostic: log prefix-hash divergence vs prior turn for this session.
+        # Body is hashed BEFORE our slot/cache injection so we measure only
+        # api-side variation.
+        if is_chat_completion and session_id and body:
+            _log_prompt_divergence(session_id, body)
+
+        # Step 2: eager body injection for chat completions with a pinned slot
         upstream_body = body
-        if slot_file and is_chat_completion and body:
-            try:
-                body_dict = json.loads(body)
-                body_dict["id_slot"] = _session_slot_cache.get(session_id, slot_id)
-                upstream_body = json.dumps(body_dict)
-            except (json.JSONDecodeError, TypeError, ValueError) as e:
-                logger.error(
-                    "Failed to inject id_slot into request body — slot persistence "
-                    "will not work for this request. Body may be malformed.",
-                    error=str(e),
+        if slot_id is not None and is_chat_completion and body:
+            new_body, ok = _inject_slot_body(body, slot_id)
+            if ok:
+                upstream_body = new_body
+            else:
+                logger.warning(
+                    "Could not parse request body as JSON — skipping slot/cache "
+                    "injection",
                     session_id=session_id,
                     slot_id=slot_id,
+                    server_id=server_id,
                 )
 
         # Build headers (exclude hop-by-hop)
@@ -578,7 +921,7 @@ async def proxy_request(request: Request, server_id: str, path: str):
             "te",
             "trailers",
             "proxy-connection",
-            "content-length",  # stripped — body may be modified (id_slot)
+            "content-length",  # stripped — body may be modified
         }
         headers = dict(request.headers)
         for h in hop_by_hop:
@@ -586,168 +929,47 @@ async def proxy_request(request: Request, server_id: str, path: str):
         headers["host"] = f"127.0.0.1:{entry.port}"
 
         method = request.method
-        client = httpx.AsyncClient(timeout=PROXY_TIMEOUT)
 
-        # Check if this is likely an SSE request (POST to /v1/chat/completions)
-        is_likely_sse = method == "POST" and is_chat_completion and body
-
+        # Decide streaming vs non-streaming based on the (possibly injected) body
+        is_likely_sse = method == "POST" and is_chat_completion and bool(body)
         if is_likely_sse:
             try:
-                body_dict = json.loads(body)
-                is_likely_sse = body_dict.get("stream", False)
+                bd = json.loads(upstream_body if upstream_body else body)
+                is_likely_sse = bool(bd.get("stream", False))
             except Exception:
-                is_likely_sse = True  # be safe, stream if we can't parse
+                is_likely_sse = True  # be safe — stream if unparseable
 
         logger.info(
             "Proxy path",
             server_id=server_id,
             path=path,
             is_streaming=is_likely_sse,
-            has_slot_file=bool(slot_file),
+            slot_id=slot_id,
+            session_id=session_id,
         )
 
         if is_likely_sse:
-            # Capture slot token baseline before the request so we can
-            # diff after to find which slot llama.cpp actually used.
-            before_tokens: Dict[int, int] = {}
-            if slot_file and target_host:
-                try:
-                    async with httpx.AsyncClient(timeout=2.0) as bl_client:
-                        bl_resp = await bl_client.get(f"{target_host}/slots")
-                        if bl_resp.status_code == 200:
-                            for s in bl_resp.json():
-                                sid = s.get("id")
-                                if sid is not None:
-                                    before_tokens[sid] = s.get("n_tokens", 0)
-                except Exception:
-                    pass
-
-            # Streaming: decrement and slot save happen in upstream_iterator's
-            # finally block when the stream drains or client disconnects.
             is_streaming = True
             return await _stream_upstream(
-                client,
+                pool_client,
                 method,
                 upstream_url,
                 headers,
                 upstream_body,
                 server_id,
                 target_host=target_host,
-                slot_id=slot_id,
-                slot_file=slot_file,
+                slot_id=slot_id or 0,
+                slot_file=(
+                    _slot_file_path(session_id, server_id)
+                    if persistence_on and session_id
+                    else ""
+                ),
                 session_id=session_id or "",
-                before_tokens=before_tokens if before_tokens else None,
             )
 
-        # Non-streaming path
-        logger.info(
-            "Taking non-streaming path",
-            server_id=server_id,
-            has_slot_file=bool(slot_file),
-        )
-
-        # If slot persistence is active, always stream upstream to keep the
-        # connection open (and the slot assigned) until we can save.  Then
-        # convert the SSE back to non-streaming JSON for the client.
-        if slot_file and is_chat_completion:
-            try:
-                body_dict = json.loads(upstream_body)
-                body_dict["stream"] = True
-                stream_body = json.dumps(body_dict)
-            except Exception:
-                stream_body = upstream_body
-            logger.info(
-                "Overriding upstream to stream=true for slot save", server_id=server_id
-            )
-
-            try:
-                response = await client.send(
-                    client.build_request(
-                        method=method,
-                        url=upstream_url,
-                        headers=headers,
-                        content=stream_body,
-                    ),
-                    stream=True,
-                )
-            except httpx.HTTPError as exc:
-                logger.error(
-                    "Upstream server %s error before response: %s", server_id, exc
-                )
-                await client.aclose()
-                server_cache.decrement_use(server_id)
-                raise
-
-            resp_content = b""
-            async for chunk in response.aiter_bytes():
-                resp_content += chunk
-
-            # Save slot BEFORE closing the upstream connection — the slot
-            # is still assigned while the connection is open.
-            # Use the SAME httpx client to reuse the TCP connection,
-            # which keeps the slot pinned in llama.cpp.
-            num = _num_slots_cache.get(server_id, 1)
-            actual_slot = await _find_used_slot(target_host, num)
-            if actual_slot is None:
-                actual_slot = slot_id
-            if session_id:
-                _session_slot_cache[session_id] = actual_slot
-            logger.info(
-                "Saving slot (non-streaming path)",
-                slot_file=slot_file,
-                slot_id=actual_slot,
-            )
-
-            # Send save on the same client connection to keep slot pinned
-            try:
-                save_resp = await client.post(
-                    f"{target_host}/slots/{actual_slot}?action=save",
-                    json={"filename": os.path.basename(slot_file)},
-                )
-                logger.info(
-                    "Slot save response (non-streaming)",
-                    slot_file=slot_file,
-                    slot_id=actual_slot,
-                    status=save_resp.status_code,
-                    body=save_resp.text[:200],
-                )
-            except Exception as e:
-                logger.warning("Slot save failed (non-streaming)", error=str(e))
-            slot_saved = True
-
-            await response.aclose()
-            await client.aclose()
-            server_cache.decrement_use(server_id)
-
-            # Convert SSE back to non-streaming JSON
-            model_name = ""
-            try:
-                body_dict = json.loads(body)
-                model_name = body_dict.get("model", "")
-            except Exception:
-                pass
-            result = _sse_to_nonstreaming(resp_content, model_name)
-            if result:
-                return Response(
-                    content=json.dumps(result),
-                    status_code=200,
-                    media_type="application/json",
-                )
-
-            # Fallback: return raw upstream response if conversion fails
-            return Response(
-                content=resp_content,
-                status_code=response.status_code,
-                headers={
-                    k: v
-                    for k, v in dict(response.headers).items()
-                    if k.lower() not in ("transfer-encoding", "content-length")
-                },
-            )
-
-        # No slot persistence — straightforward non-streaming proxy
-        async with client:
-            async with client.stream(
+        # Non-streaming path — use the pooled client
+        try:
+            async with pool_client.stream(
                 method=method,
                 url=upstream_url,
                 headers=headers,
@@ -766,11 +988,10 @@ async def proxy_request(request: Request, server_id: str, path: str):
                         if k.lower() not in ("transfer-encoding", "content-length")
                     },
                 )
+        except httpx.HTTPError:
+            raise
 
     except httpx.RemoteProtocolError as exc:
-        # Upstream llama.cpp crashed or disconnected mid-request
-        # (e.g., OOM, segfault, or killed by the kernel).
-        # Return 503 so the caller can retry on a different server.
         logger.error("Upstream server %s disconnected: %s", server_id, exc)
         raise HTTPException(
             status_code=503,
@@ -787,11 +1008,6 @@ async def proxy_request(request: Request, server_id: str, path: str):
             detail=f"Upstream server {server_id} timed out",
         )
     finally:
-        # Decrement for non-streaming requests and errors.
-        # Streaming requests decrement inside _stream_upstream's iterator
-        # finally block when the stream fully drains or client disconnects.
-        if not is_streaming and not slot_saved:
-            # Save slot on error path for non-streaming chat completions
-            if slot_file:
-                await _save_slot(target_host, slot_id, slot_file)
+        # Streaming requests decrement inside _stream_upstream's iterator.
+        if not is_streaming:
             server_cache.decrement_use(server_id)

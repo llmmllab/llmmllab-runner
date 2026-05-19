@@ -229,6 +229,19 @@ class ModelParameters(BaseModel):
     ] = True
     """Use unified key-value cache format for improved performance and future compatibility."""
 
+    cache_reuse: Annotated[
+        Optional[int],
+        Field(
+            default=None,
+            description="Minimum chunk size (in tokens) that llama.cpp will attempt to reuse from "
+            "the KV cache via KV-shifting for near-prefix matches (llama.cpp --cache-reuse, "
+            "request param n_cache_reuse). Requires prompt caching to be enabled. "
+            "0 disables reuse; a reasonable default is 256.",
+            ge=0,
+        ),
+    ] = None
+    """Minimum chunk size for KV-shifting prefix reuse (llama.cpp --cache-reuse). Default 256 when unset."""
+
     cache_ram: Annotated[
         Optional[int],
         Field(

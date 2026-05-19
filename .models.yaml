@@ -33,7 +33,7 @@
     max_tokens: 65536
     n_parts: -1
     batch_size: 2048
-    micro_batch_size: 2048
+    micro_batch_size: 512
     n_gpu_layers: -1
     think: False
     reasoning_budget: 8192
@@ -44,7 +44,7 @@
     # ctx_size_reduction_limit: 1.0
     # slot_prompt_similarity: 0
     parallel: 4
-    split_mode: "row"
+    split_mode: "layer"
   pipeline: llama
   lora_weights: []
   provider: llama_cpp
