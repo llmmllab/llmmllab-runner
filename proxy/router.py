@@ -129,6 +129,49 @@ _slot_lrus: Dict[str, SlotLRU] = {}
 _slot_lrus_lock = asyncio.Lock()
 
 
+# Reverse lookup used by the subprocess log drain in server_manager/base.py
+# to attribute llama.cpp stdout/stderr lines (which only know slot IDs) to
+# the session_id pinned to that slot.  Cheap, lock-free (SlotLRU._map mutates
+# under its own asyncio.Lock; this is a best-effort read that may race with
+# eviction — the worst case is logging a stale session_id, which is still
+# more useful than no session_id).
+def session_for_slot(server_id: str, slot_id: int) -> Optional[str]:
+    """Return the session_id currently pinned to ``slot_id`` on ``server_id``.
+
+    Returns ``None`` if no SlotLRU exists for the server yet (e.g. during
+    startup before the first proxy request) or no session is pinned.
+    """
+    lru = _slot_lrus.get(server_id)
+    if lru is None:
+        return None
+    for sid, sl in lru._map.items():
+        if sl == slot_id:
+            return sid
+    return None
+
+
+# Pattern that matches llama.cpp's "slot launch_slot_: id N | task M" /
+# "slot print_timing: id N | task M | ..." / etc. format.  llama.cpp itself
+# doesn't know about our session concept, but every slot-related line has the
+# slot id sitting right after `id `.  Compiled once at import.
+import re as _re
+_LLAMACPP_SLOT_RE = _re.compile(r"\bslot\s+\w+:\s+id\s+(\d+)\b")
+
+
+def slot_id_from_llamacpp_line(line: str) -> Optional[int]:
+    """Best-effort extraction of llama.cpp's slot id from a log line.
+
+    Returns ``None`` for lines that don't reference a slot.
+    """
+    m = _LLAMACPP_SLOT_RE.search(line)
+    if m is None:
+        return None
+    try:
+        return int(m.group(1))
+    except ValueError:
+        return None
+
+
 async def _get_slot_lru(server_id: str, target_host: str) -> SlotLRU:
     """Return the per-server SlotLRU, creating it lazily."""
     lru = _slot_lrus.get(server_id)

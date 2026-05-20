@@ -66,15 +66,23 @@ class TestSlotPersistenceConfig:
 
             assert config.SLOT_SAVE_DIR == ""
 
-    def test_slot_no_mmap_default_true(self):
-        """SLOT_NO_MMAP defaults to True."""
+    def test_slot_no_mmap_default_false(self):
+        """SLOT_NO_MMAP defaults to False.
+
+        Was True historically (forced on whenever SLOT_SAVE_DIR was set);
+        flipped in commit cdb05f0 after we confirmed --no-mmap is not
+        actually required for slot persistence — only a platform-specific
+        workaround per the upstream tutorial.  Forcing it on caused
+        OOMKilled crash loops because llama.cpp loaded entire model
+        files into host RAM.
+        """
         env = os.environ.copy()
         env.pop("SLOT_NO_MMAP", None)
         with patch.dict(os.environ, env, clear=True):
             _clear_slot_modules()
             import config
 
-            assert config.SLOT_NO_MMAP is True
+            assert config.SLOT_NO_MMAP is False
 
     def test_slot_swa_full_default_true(self):
         """SLOT_SWA_FULL defaults to True."""

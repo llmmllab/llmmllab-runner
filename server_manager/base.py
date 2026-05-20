@@ -306,10 +306,31 @@ class BaseServerManager(ABC):
         unexpected exit.  We log stderr at INFO (not DEBUG) because that is
         where llama.cpp emits GGML_ASSERT / CUDA errors; losing those is
         what motivated this change.
+
+        Also attempts to attribute each line to a session_id by parsing
+        the llama.cpp slot id (when present) and looking up the proxy's
+        SlotLRU.  Helps correlate per-slot llama.cpp internals (prompt
+        progress, checkpoint creation, slot launches) to the user
+        session that owns the slot.  Best-effort: lines without a slot
+        reference, or boot-time logs before any session is pinned,
+        simply omit the field.
         """
         try:
             if not pipe:
                 return
+            # Late-import to avoid module-load cycles; this only happens
+            # once per drain thread, not per line.
+            try:
+                from proxy.router import (
+                    session_for_slot,
+                    slot_id_from_llamacpp_line,
+                )
+            except Exception:
+                session_for_slot = None  # type: ignore[assignment]
+                slot_id_from_llamacpp_line = None  # type: ignore[assignment]
+
+            server_id = getattr(self, "_server_id", "") or ""
+
             with pipe:
                 for line in iter(pipe.readline, ""):
                     if not line:
@@ -318,8 +339,31 @@ class BaseServerManager(ABC):
                     if is_stderr:
                         # Bounded — deque(maxlen=...) drops oldest.
                         self._stderr_buffer.append(stripped)
+                    extra_kwargs = {}
+                    if (
+                        server_id
+                        and slot_id_from_llamacpp_line is not None
+                        and session_for_slot is not None
+                    ):
+                        try:
+                            sid = slot_id_from_llamacpp_line(stripped)
+                            if sid is not None:
+                                resolved = session_for_slot(server_id, sid)
+                                if resolved:
+                                    extra_kwargs["session_id"] = resolved
+                                    extra_kwargs["slot_id"] = sid
+                        except Exception:
+                            # Best-effort enrichment; never break the drain.
+                            pass
                     try:
-                        log_fn(stripped)
+                        log_fn(stripped, **extra_kwargs)
+                    except TypeError:
+                        # log_fn doesn't accept kwargs (some loggers); retry
+                        # without enrichment.
+                        try:
+                            log_fn(stripped)
+                        except Exception:
+                            pass
                     except Exception:
                         # Logging must never kill the drain thread.
                         pass
