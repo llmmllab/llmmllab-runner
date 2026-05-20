@@ -2,7 +2,6 @@
   name: "Qwen3.6-27B"
   model: "Qwen3.6-27B"
   task: TextToText
-  default: true
   modified_at: "2026-04-22T15:59:03.844554+00:00"
   digest: 19a2f4733a863088bc06665bf307dca95f7d4370b4d8690340cdff9992fe48c6
   size: 35325163744
@@ -53,6 +52,7 @@
   name: "Qwen3.6-27B-MTP"
   model: "Qwen3.6-27B-MTP"
   task: TextToText
+  default: true
   modified_at: "2026-05-17T15:33:45.891082+00:00"
   digest: f3b4a622e06e8ade06ec5c0eb9b40ed7c9bd707b5fada46c0215f4ab4a6bc32b
   size: 26015429760
