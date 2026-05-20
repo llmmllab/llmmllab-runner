@@ -75,6 +75,14 @@ spec:
               value: "/app"
             - name: PYTHONUNBUFFERED
               value: "1"
+            # Used by utils/dcgm_metrics.py to filter DCGM exporter scrapes
+            # to the local node's GPUs only.  The dcgm-exporter Service
+            # load-balances across all GPU nodes; without this filter,
+            # alternating scrapes would return foreign-node metrics.
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
             - name: LOG_LEVEL
               value: "DEBUG"
             - name: LLAMA_SERVER_EXECUTABLE
@@ -205,6 +213,14 @@ spec:
               value: "/app"
             - name: PYTHONUNBUFFERED
               value: "1"
+            # Used by utils/dcgm_metrics.py to filter DCGM exporter scrapes
+            # to the local node's GPUs only.  The dcgm-exporter Service
+            # load-balances across all GPU nodes; without this filter,
+            # alternating scrapes would return foreign-node metrics.
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
             - name: LOG_LEVEL
               value: "DEBUG"
             - name: LLAMA_SERVER_EXECUTABLE

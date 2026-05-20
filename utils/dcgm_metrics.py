@@ -13,38 +13,37 @@ from typing import Any, Dict, List, Optional
 
 import httpx
 
-from config import DCGM_EXPORTER_URL, DCGM_METRICS_ENABLED
+from config import DCGM_EXPORTER_URL, DCGM_METRICS_ENABLED, NODE_NAME
 from utils.logging import llmmllogger
 
 logger = llmmllogger.bind(component="DCGMMetrics")
 
 
-# Mapping of DCGM Prometheus metric names to our internal keys.
-# DCGM labels include `GPU` (UUID) and `gpu` (index).
+# Mapping of NVIDIA dcgm-exporter Prometheus metric names to our
+# internal Prometheus gauge keys (see middleware/prometheus_metrics.py
+# for the gauge definitions).
+#
+# Real DCGM exporter metric names use the DCGM_FI_DEV_* prefix.  The
+# previous mapping used nv_* names which never existed in dcgm-exporter
+# output — so the scrape "succeeded" in HTTP terms but mapped zero
+# samples to gauges, silently emitting nothing.
 _DCGM_METRIC_MAP: Dict[str, str] = {
     # GPU utilization
-    "nv_gpu_utilization": "gpu_compute_utilization",
-    "nv_mem_copy_utilization": "gpu_memory_bandwidth_utilization",
+    "DCGM_FI_DEV_GPU_UTIL": "gpu_compute_utilization",
+    "DCGM_FI_DEV_MEM_COPY_UTIL": "gpu_memory_bandwidth_utilization",
     # Clocks
-    "nv_sm_clock": "gpu_sm_clock_mhz",
-    "nv_mem_clock": "gpu_mem_clock_mhz",
-    # Fan
-    "nv_fan_speed": "gpu_fan_speed_percent",
-    # Power (DCGM version — may overlap with nvidia-smi path)
-    "nv_power_usage": "gpu_power_watts",
-    # ECC
-    "nv_ecc_sbe_volatile": "gpu_ecc_sbe_volatile_total",
-    "nv_ecc_dbe_volatile": "gpu_ecc_dbe_volatile_total",
-    # PCIe throughput
-    "nv_pcie_tx_bytes": "gpu_pcie_tx_bytes_total",
-    "nv_pcie_rx_bytes": "gpu_pcie_rx_bytes_total",
-    # NVLink (if applicable)
-    "nv_nvlink_flit_tx": "gpu_nvlink_flit_tx_total",
-    "nv_nvlink_flit_rx": "gpu_nvlink_flit_rx_total",
+    "DCGM_FI_DEV_SM_CLOCK": "gpu_sm_clock_mhz",
+    "DCGM_FI_DEV_MEM_CLOCK": "gpu_mem_clock_mhz",
+    # Power
+    "DCGM_FI_DEV_POWER_USAGE": "gpu_power_watts",
     # Encoder / Decoder utilization
-    "nv_vbios_version": "nv_vbios_version",  # informational
-    "nv_dec_utilization": "gpu_decoder_utilization",
-    "nv_enc_utilization": "gpu_encoder_utilization",
+    "DCGM_FI_DEV_DEC_UTIL": "gpu_decoder_utilization",
+    "DCGM_FI_DEV_ENC_UTIL": "gpu_encoder_utilization",
+    # ECC: dcgm-exporter exposes counters by error type (volatile/aggregate,
+    # SBE/DBE).  These names match common configurations; if your DCGM
+    # config doesn't enable them, they're simply absent and harmless.
+    "DCGM_FI_DEV_ECC_SBE_VOL_TOTAL": "gpu_ecc_sbe_volatile_total",
+    "DCGM_FI_DEV_ECC_DBE_VOL_TOTAL": "gpu_ecc_dbe_volatile_total",
 }
 
 
@@ -114,16 +113,41 @@ async def scrape_dcgm_metrics() -> Dict[str, Dict[str, float]]:
 
     samples = _parse_prometheus_text(raw)
 
-    # Build per-GPU metric dicts
+    # Build per-GPU metric dicts, filtered to the local node only.
+    #
+    # The dcgm-exporter Service load-balances across all GPU nodes.  Without
+    # a Hostname filter, alternating scrapes return metrics for whichever
+    # node the Service picked, causing gauge values to flicker between
+    # nodes' GPUs.  Drop samples whose Hostname label doesn't match this
+    # pod's NODE_NAME (set via the downward API in deployment.yaml).
+    #
+    # If NODE_NAME isn't set (local dev, manual run), accept all samples.
     gpu_metrics: Dict[str, Dict[str, float]] = {}
+    target_host = NODE_NAME or ""
+    foreign_dropped = 0
 
     for dcgm_name, internal_key in _DCGM_METRIC_MAP.items():
         for sample in samples.get(dcgm_name, []):
+            if target_host and sample.get("Hostname", "") != target_host:
+                foreign_dropped += 1
+                continue
             gpu_idx = sample.get("gpu", sample.get("GPU", "0"))
             value = sample["__value__"]
             gpu_metrics.setdefault(str(gpu_idx), {})[internal_key] = value
 
     if gpu_metrics:
-        logger.debug(f"DCGM scrape: {len(gpu_metrics)} GPUs, "
-                      f"{sum(len(v) for v in gpu_metrics.values())} metrics")
+        logger.debug(
+            f"DCGM scrape: {len(gpu_metrics)} GPUs, "
+            f"{sum(len(v) for v in gpu_metrics.values())} metrics"
+            + (f" (dropped {foreign_dropped} from foreign nodes)" if foreign_dropped else "")
+        )
+    elif foreign_dropped:
+        # All samples came from a different node.  Common when the Service
+        # routes the scrape to a non-local exporter.  Log at debug, not
+        # warning — next scrape may pick the local one.
+        logger.debug(
+            f"DCGM scrape returned only foreign-node metrics "
+            f"({foreign_dropped} dropped, target={target_host!r}). "
+            "Service may have load-balanced to another node."
+        )
     return gpu_metrics

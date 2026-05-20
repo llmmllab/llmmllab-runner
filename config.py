@@ -42,9 +42,21 @@ DCGM_METRICS_ENABLED = os.environ.get("DCGM_METRICS_ENABLED", "true").lower() in
     "1",
     "yes",
 )
+# NVIDIA gpu-operator deploys dcgm-exporter as a DaemonSet under the
+# gpu-operator namespace with a ClusterIP service.  The service load-balances
+# across all GPU nodes' exporters, so callers must filter by NODE_NAME (see
+# utils/dcgm_metrics.py) to scrape only their local node's GPUs.  The old
+# default of localhost:9400 assumed a sidecar pattern that doesn't exist.
 DCGM_EXPORTER_URL = os.environ.get(
-    "DCGM_EXPORTER_URL", "http://localhost:9400/metrics"
+    "DCGM_EXPORTER_URL",
+    "http://nvidia-dcgm-exporter.gpu-operator.svc.cluster.local:9400/metrics",
 )
+
+# Set via the downward API in k8s/deployment.yaml (spec.nodeName).
+# Used by utils/dcgm_metrics.py to filter DCGM metrics to the local
+# node only, since the dcgm-exporter Service load-balances across
+# all GPU nodes.
+NODE_NAME = os.environ.get("NODE_NAME", "")
 
 # Llama.cpp server metrics scraping interval (seconds)
 LLAMA_METRICS_INTERVAL_SEC = int(
