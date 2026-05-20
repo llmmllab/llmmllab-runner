@@ -1,0 +1,68 @@
+# Prometheus scrape configuration for the llmmllab cluster.
+# Applied as a ConfigMap named "prometheus-config" in the llmmllab namespace.
+#
+# Update flow:
+#   1. Edit the prometheus.yml block below.
+#   2. kubectl apply -f k8s/prometheus-config.yaml
+#   3. kubectl -n llmmllab rollout restart deployment/prometheus
+#
+# Scrape jobs:
+#   - llmmllab-api / llmmllab-runner / llmmllab-runner-small:
+#       application metrics on /metrics over the Service ClusterIP.
+#   - nvidia-dcgm-exporter:
+#       DCGM_FI_DEV_* GPU metrics scraped from the gpu-operator's
+#       DaemonSet, one endpoint per GPU node.  Uses endpoints-style
+#       service discovery so every node's exporter is scraped on
+#       every cycle.  `node` and `pod` labels are promoted from
+#       Kubernetes metadata for easy grouping in Grafana.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-config
+  namespace: llmmllab
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: 15s
+      evaluation_interval: 15s
+    
+    scrape_configs:
+      - job_name: "llmmllab-api"
+        metrics_path: /metrics
+        static_configs:
+          - targets: ["llmmllab.llmmllab.svc.cluster.local:9999"]
+    
+      - job_name: "llmmllab-runner"
+        metrics_path: /metrics
+        static_configs:
+          - targets: ["llmmllab-runner.llmmllab.svc.cluster.local:8000"]
+    
+      - job_name: "llmmllab-runner-small"
+        metrics_path: /metrics
+        static_configs:
+          - targets: ["llmmllab-runner-small.llmmllab.svc.cluster.local:8000"]
+    
+      # NVIDIA DCGM exporter (gpu-operator DaemonSet, one pod per GPU node).
+      # Scraping by Service ClusterIP would only hit one pod at a time;
+      # use the endpoints-style kubernetes_sd_config so we scrape every
+      # node's exporter on every cycle and get per-Hostname series.
+      - job_name: "nvidia-dcgm-exporter"
+        metrics_path: /metrics
+        kubernetes_sd_configs:
+          - role: endpoints
+            namespaces:
+              names: ["gpu-operator"]
+        relabel_configs:
+          # Keep only the dcgm-exporter Service's endpoints.
+          - source_labels: [__meta_kubernetes_service_name]
+            action: keep
+            regex: nvidia-dcgm-exporter
+          # Keep only the named metrics port (avoid scraping :8080 etc.).
+          - source_labels: [__meta_kubernetes_endpoint_port_name]
+            action: keep
+            regex: gpu-metrics
+          # Promote useful labels so the panels can split by node / GPU.
+          - source_labels: [__meta_kubernetes_pod_node_name]
+            target_label: node
+          - source_labels: [__meta_kubernetes_pod_name]
+            target_label: pod
