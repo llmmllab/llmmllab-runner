@@ -49,11 +49,20 @@ spec:
             limits:
               # With --no-mmap disabled (SLOT_NO_MMAP=false), model
               # weights are memory-mapped from disk by the OS page
-              # cache; resident host RAM stays small even for large
-              # models because pages page in lazily.  Real usage is
-              # cache_ram (2 GiB default) + Python/runner + scratch
-              # buffers, all comfortably under this cap.
-              memory: "12Gi"
+              # cache.  In theory only actively-touched pages stay
+              # resident.  In practice on cgroup v2 (which counts
+              # file-backed page cache against the limit) sustained
+              # inference can hold tens of GiB of model pages until
+              # the kernel evicts under pressure — and OOMKilled
+              # fires before reclaim catches up.
+              #
+              # Tuned to 20Gi: enough for one ~35 GB Q6 model's
+              # working set + cache_ram (2 GiB) + Python/runner
+              # overhead, but under the 32 GB host total so the
+              # node still has room for the small-runner pod and
+              # other workloads.  Bump higher only if OOMKilled
+              # recurs and you have headroom.
+              memory: "20Gi"
               cpu: "8"
           volumeMounts:
             - name: models
