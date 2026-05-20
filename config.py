@@ -64,20 +64,34 @@ DCGM_METRICS_INTERVAL_SEC = int(
 # Example: SLOT_SAVE_DIR=/data/slots  →  --slot-save-path /data/slots
 SLOT_SAVE_DIR = os.environ.get("SLOT_SAVE_DIR", "")
 
-# When SLOT_SAVE_DIR is set, also pass --no-mmap to llama-server.
-# --no-mmap was historically forced on when slot persistence was
-# enabled, under the assumption it was needed to prevent the OS from
-# evicting mmap pages between save and restore.  That rationale is
-# incorrect: slot save/restore operates on the GPU-side KV cache,
-# not on the model-weights mmap region, so they're independent.
-# Meanwhile --no-mmap forces llama.cpp to load the entire model file
-# into a malloc'd host buffer before GPU transfer, spiking host RAM
-# to model-size during model loads / model switches.  This caused
-# OOMKilled crash loops on memory-limited pods.
+# --no-mmap was historically forced on whenever SLOT_SAVE_DIR was set,
+# based on the upstream slot-persistence tutorial
+# (https://github.com/ggml-org/llama.cpp/discussions/20572) which lists
+# it under "Avoids memory-mapped file issues on some platforms" —
+# a platform-specific workaround, NOT a slot-persistence requirement.
 #
-# Default is now "false" — let the OS memory-map the model file and
-# only the actually-referenced pages stay resident.  Set
-# SLOT_NO_MMAP=true to opt back in if you have a specific reason.
+# The architectural requirements for safe slot KV save/restore are:
+#   --slot-save-path <dir>     enables the /slots/<id>?action=save|restore endpoints
+#   --swa-full                 required for SWA models (Qwen 3.x) so the sliding
+#                              window doesn't corrupt persisted KV state
+#   cache_prompt: true         in the request body, so the server matches existing
+#                              prefix cache after restore
+# All three are configured elsewhere; --no-mmap is unrelated.
+#
+# Default is "false" because --no-mmap forces llama.cpp to load the
+# entire model file (~35 GB for Qwen3.6-27B Q6) into a malloc'd host
+# buffer before GPU transfer, spiking host RSS to model-size during
+# model load / switch and OOMKilling memory-limited pods. With mmap
+# (the OS default), only actively-touched pages stay resident — host
+# RSS during steady state is well under 2 GiB regardless of model size.
+#
+# Set SLOT_NO_MMAP=true to opt back in only if you hit a specific
+# platform issue with slot save/restore when mmap is enabled.
+SLOT_NO_MMAP = os.environ.get("SLOT_NO_MMAP", "false").lower() in (
+    "true",
+    "1",
+    "yes",
+)
 SLOT_NO_MMAP = os.environ.get("SLOT_NO_MMAP", "false").lower() in (
     "true",
     "1",
