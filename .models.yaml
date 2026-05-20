@@ -82,7 +82,7 @@
     max_tokens: 65536
     n_parts: -1
     batch_size: 2048
-    micro_batch_size: 2048
+    micro_batch_size: 512
     n_gpu_layers: -1
     think: False
     reasoning_budget: 8192
@@ -95,9 +95,9 @@
     # MTP requires parallel=1 (llama.cpp limitation until parallel drafting support lands)
     parallel: 4
     is_default: True
-    split_mode: "row"
+    split_mode: "layer"
     spec_type_mtp: true
-    spec_draft_n_max: 4
+    spec_draft_n_max: 3
     kv_unified: True
   pipeline: llama
   lora_weights: []
