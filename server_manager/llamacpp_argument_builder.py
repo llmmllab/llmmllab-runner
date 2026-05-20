@@ -102,7 +102,14 @@ class LlamaCppArgumentBuilder:
                 "timeout": 600,
                 "context_shift": True,
                 "mirostat": 1,
-                "cache_ram": params.cache_ram if params.cache_ram is not None else 8192,
+                # --cache-ram default reduced from 8192 (8 GB) to 2048 (2 GB).
+                # The 8 GB default was per-server, and combined with the
+                # --no-mmap model load (full 35 GB Q6 in host RAM) was pushing
+                # the pod over its memory limit during model switches.
+                # 2 GB is more than enough host-side prompt cache for typical
+                # workloads; per-model override via ModelParameters.cache_ram
+                # is still respected when explicitly set.
+                "cache_ram": params.cache_ram if params.cache_ram is not None else 2048,
                 "parallel": params.parallel or 4,
                 "kv_unified": params.kv_unified,
                 "cache_reuse": params.cache_reuse if params.cache_reuse is not None else 256,
