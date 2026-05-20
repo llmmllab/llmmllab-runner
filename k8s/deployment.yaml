@@ -44,17 +44,16 @@ spec:
               protocol: TCP
           resources:
             requests:
-              memory: "16Gi"
+              memory: "8Gi"
               cpu: "4"
             limits:
-              # Sized to fit a ~35 GB Q6 model loaded with --no-mmap
-              # (required for safe slot persistence) plus llama.cpp's
-              # host-side prompt cache, scratch buffers, and Python/runner
-              # overhead.  The previous 16Gi limit OOMKilled the pod
-              # mid-model-load during model switches, causing a
-              # crash-restart loop visible to the api as repeated
-              # stale-handle errors.
-              memory: "64Gi"
+              # With --no-mmap disabled (SLOT_NO_MMAP=false), model
+              # weights are memory-mapped from disk by the OS page
+              # cache; resident host RAM stays small even for large
+              # models because pages page in lazily.  Real usage is
+              # cache_ram (2 GiB default) + Python/runner + scratch
+              # buffers, all comfortably under this cap.
+              memory: "12Gi"
               cpu: "8"
           volumeMounts:
             - name: models

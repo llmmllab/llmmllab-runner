@@ -65,10 +65,20 @@ DCGM_METRICS_INTERVAL_SEC = int(
 SLOT_SAVE_DIR = os.environ.get("SLOT_SAVE_DIR", "")
 
 # When SLOT_SAVE_DIR is set, also pass --no-mmap to llama-server.
-# Memory-mapped model loading can interfere with slot persistence
-# because the OS may evict mmap pages between save and restore.
-# Set to "false" to disable even when slot persistence is enabled.
-SLOT_NO_MMAP = os.environ.get("SLOT_NO_MMAP", "true").lower() in (
+# --no-mmap was historically forced on when slot persistence was
+# enabled, under the assumption it was needed to prevent the OS from
+# evicting mmap pages between save and restore.  That rationale is
+# incorrect: slot save/restore operates on the GPU-side KV cache,
+# not on the model-weights mmap region, so they're independent.
+# Meanwhile --no-mmap forces llama.cpp to load the entire model file
+# into a malloc'd host buffer before GPU transfer, spiking host RAM
+# to model-size during model loads / model switches.  This caused
+# OOMKilled crash loops on memory-limited pods.
+#
+# Default is now "false" — let the OS memory-map the model file and
+# only the actually-referenced pages stay resident.  Set
+# SLOT_NO_MMAP=true to opt back in if you have a specific reason.
+SLOT_NO_MMAP = os.environ.get("SLOT_NO_MMAP", "false").lower() in (
     "true",
     "1",
     "yes",
