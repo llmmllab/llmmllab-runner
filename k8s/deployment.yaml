@@ -26,15 +26,6 @@ spec:
           hostPath:
             path: /slots
             type: DirectoryOrCreate
-        # Required by the dcgm-exporter sidecar — exposes per-pod GPU
-        # device-resource info from kubelet so DCGM can attribute
-        # metrics to GPU UUIDs allocated to containers on this node.
-        # Read-only hostPath, same mount path the gpu-operator's own
-        # DaemonSet uses.
-        - name: pod-gpu-resources
-          hostPath:
-            path: /var/lib/kubelet/pod-resources
-            type: Directory
       containers:
         - name: llmmllab-runner
           image: 192.168.0.71:31500/llmmllab-runner:latest
@@ -132,52 +123,20 @@ spec:
               value: "http://tempo.llmmllab.svc.cluster.local:4317"
             - name: DCGM_METRICS_ENABLED
               value: "true"
-            # Sidecar lives in the same pod network namespace — scrape
-            # via localhost to avoid the cluster Service's cross-node
-            # load-balancing.  Hostname filter in dcgm_metrics.py is
-            # then a no-op (always matches) since the local sidecar
-            # only sees this node's GPUs anyway.
+            # Use the cluster Service for the gpu-operator DaemonSet
+            # exporter; utils/dcgm_metrics.py filters by NODE_NAME to
+            # the local node so cross-node samples are dropped even
+            # when the Service load-balances.
             - name: DCGM_EXPORTER_URL
-              value: "http://localhost:9400/metrics"
+              value: "http://nvidia-dcgm-exporter.gpu-operator.svc.cluster.local:9400/metrics"
             - name: SLOT_SAVE_DIR
               value: "/slots"
-        # DCGM exporter sidecar.  Image and configuration mirror the
-        # gpu-operator's nvidia-dcgm-exporter DaemonSet (4.4.2-4.7.0-distroless)
-        # — the older 2.3.2 image previously commented out here had a
-        # missing-entrypoint bug.  Listens on localhost:9400 inside the
-        # pod and is scraped by the runner's update_dcgm_metrics loop
-        # via DCGM_EXPORTER_URL=http://localhost:9400/metrics.
-        - name: dcgm-exporter
-          image: nvcr.io/nvidia/k8s/dcgm-exporter:4.4.2-4.7.0-distroless
-          imagePullPolicy: IfNotPresent
-          ports:
-            - containerPort: 9400
-              name: metrics
-              protocol: TCP
-          env:
-            - name: DCGM_EXPORTER_LISTEN
-              value: ":9400"
-            - name: DCGM_EXPORTER_KUBERNETES
-              value: "true"
-            - name: DCGM_EXPORTER_COLLECTORS
-              value: "/etc/dcgm-exporter/dcp-metrics-included.csv"
-            - name: NODE_NAME
-              valueFrom:
-                fieldRef:
-                  fieldPath: spec.nodeName
-          securityContext:
-            privileged: true
-          volumeMounts:
-            - name: pod-gpu-resources
-              mountPath: /var/lib/kubelet/pod-resources
-              readOnly: true
-          resources:
-            requests:
-              memory: "200Mi"
-              cpu: "100m"
-            limits:
-              memory: "512Mi"
-              cpu: "500m"
+        # No DCGM exporter sidecar — Prometheus scrapes the
+        # gpu-operator's nvidia-dcgm-exporter DaemonSet directly (see
+        # k8s/prometheus-config.yaml) and Grafana panels query
+        # DCGM_FI_DEV_* metrics natively.  The runner's local DCGM
+        # scrape loop is still functional via the cluster Service for
+        # internal gauges, filtered by NODE_NAME to the local node.
   strategy:
     type: Recreate
 ---
@@ -212,15 +171,6 @@ spec:
           hostPath:
             path: /slots
             type: DirectoryOrCreate
-        # Required by the dcgm-exporter sidecar — exposes per-pod GPU
-        # device-resource info from kubelet so DCGM can attribute
-        # metrics to GPU UUIDs allocated to containers on this node.
-        # Read-only hostPath, same mount path the gpu-operator's own
-        # DaemonSet uses.
-        - name: pod-gpu-resources
-          hostPath:
-            path: /var/lib/kubelet/pod-resources
-            type: Directory
       containers:
         - name: llmmllab-runner
           image: 192.168.0.71:31500/llmmllab-runner:latest
@@ -305,52 +255,20 @@ spec:
               value: "90"
             - name: DCGM_METRICS_ENABLED
               value: "true"
-            # Sidecar lives in the same pod network namespace — scrape
-            # via localhost to avoid the cluster Service's cross-node
-            # load-balancing.  Hostname filter in dcgm_metrics.py is
-            # then a no-op (always matches) since the local sidecar
-            # only sees this node's GPUs anyway.
+            # Use the cluster Service for the gpu-operator DaemonSet
+            # exporter; utils/dcgm_metrics.py filters by NODE_NAME to
+            # the local node so cross-node samples are dropped even
+            # when the Service load-balances.
             - name: DCGM_EXPORTER_URL
-              value: "http://localhost:9400/metrics"
+              value: "http://nvidia-dcgm-exporter.gpu-operator.svc.cluster.local:9400/metrics"
             - name: SLOT_SAVE_DIR
               value: "/slots"
-        # DCGM exporter sidecar.  Image and configuration mirror the
-        # gpu-operator's nvidia-dcgm-exporter DaemonSet (4.4.2-4.7.0-distroless)
-        # — the older 2.3.2 image previously commented out here had a
-        # missing-entrypoint bug.  Listens on localhost:9400 inside the
-        # pod and is scraped by the runner's update_dcgm_metrics loop
-        # via DCGM_EXPORTER_URL=http://localhost:9400/metrics.
-        - name: dcgm-exporter
-          image: nvcr.io/nvidia/k8s/dcgm-exporter:4.4.2-4.7.0-distroless
-          imagePullPolicy: IfNotPresent
-          ports:
-            - containerPort: 9400
-              name: metrics
-              protocol: TCP
-          env:
-            - name: DCGM_EXPORTER_LISTEN
-              value: ":9400"
-            - name: DCGM_EXPORTER_KUBERNETES
-              value: "true"
-            - name: DCGM_EXPORTER_COLLECTORS
-              value: "/etc/dcgm-exporter/dcp-metrics-included.csv"
-            - name: NODE_NAME
-              valueFrom:
-                fieldRef:
-                  fieldPath: spec.nodeName
-          securityContext:
-            privileged: true
-          volumeMounts:
-            - name: pod-gpu-resources
-              mountPath: /var/lib/kubelet/pod-resources
-              readOnly: true
-          resources:
-            requests:
-              memory: "200Mi"
-              cpu: "100m"
-            limits:
-              memory: "512Mi"
-              cpu: "500m"
+        # No DCGM exporter sidecar — Prometheus scrapes the
+        # gpu-operator's nvidia-dcgm-exporter DaemonSet directly (see
+        # k8s/prometheus-config.yaml) and Grafana panels query
+        # DCGM_FI_DEV_* metrics natively.  The runner's local DCGM
+        # scrape loop is still functional via the cluster Service for
+        # internal gauges, filtered by NODE_NAME to the local node.
 
   strategy:
     type: Recreate
