@@ -31,6 +31,14 @@ def reset_session_id_ctx(token: contextvars.Token[str | None]) -> None:
 
 
 def _add_session_id_to_logs(_, __, event_dict):
+    # If the caller passed session_id="..." explicitly as a log kwarg, keep it.
+    # The subprocess log drain in server_manager/base.py uses this path to
+    # attribute llama.cpp lines to the session that owns the slot — without
+    # the explicit-takes-precedence rule, this processor would clobber that
+    # value with the (empty) contextvar and write the literal "none".
+    existing = event_dict.get("session_id")
+    if existing not in (None, "", "none"):
+        return event_dict
     sid = _session_id_ctx.get()
     event_dict["session_id"] = sid or "none"
     return event_dict
