@@ -294,8 +294,14 @@ def _save_file_exists(session_id: str, server_id: str) -> bool:
 
 import hashlib as _hashlib  # local alias — hashlib is also imported lazily below
 
-# session_id -> list of (offset, md5_short) snapshots from the previous request
-_session_prompt_hashes: Dict[str, List[Tuple[int, str]]] = {}
+# session_id -> list of (offset, md5_short) snapshots from the previous request.
+# Bounded via FIFO eviction so a long-running runner with many distinct
+# session_ids doesn't accumulate unbounded entries (each entry is small —
+# ~13 tuples of (int, 8-char hex) ≈ 600 B — but at 10k sessions that's
+# 6 MiB of orphaned diagnostic state).
+from collections import OrderedDict as _OrderedDict
+_SESSION_PROMPT_HASHES_MAX = 1024
+_session_prompt_hashes: "_OrderedDict[str, List[Tuple[int, str]]]" = _OrderedDict()
 
 # Byte offsets at which we hash the prompt body.  Spans the range where we
 # observed cache divergence (between ~16K and ~24K llama.cpp checkpoints).
@@ -337,7 +343,12 @@ def _log_prompt_divergence(session_id: str, body: bytes) -> None:
             if h_new != h_prev:
                 first_div = off_new
                 break
+    # FIFO-bounded write: refresh recency, then drop oldest if over cap.
+    if session_id in _session_prompt_hashes:
+        _session_prompt_hashes.move_to_end(session_id)
     _session_prompt_hashes[session_id] = new_hashes
+    while len(_session_prompt_hashes) > _SESSION_PROMPT_HASHES_MAX:
+        _session_prompt_hashes.popitem(last=False)
 
     # Build a compact representation: "1024:abcd1234,2048:..."
     hash_str = ",".join(f"{off}:{h or '-'}" for off, h in new_hashes)

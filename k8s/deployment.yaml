@@ -45,22 +45,14 @@ spec:
               memory: "8Gi"
               cpu: "4"
             limits:
-              # With --no-mmap disabled (SLOT_NO_MMAP=false), model
-              # weights are memory-mapped from disk by the OS page
-              # cache.  In theory only actively-touched pages stay
-              # resident.  In practice on cgroup v2 (which counts
-              # file-backed page cache against the limit) sustained
-              # inference can hold tens of GiB of model pages until
-              # the kernel evicts under pressure — and OOMKilled
-              # fires before reclaim catches up.
-              #
-              # Tuned to 20Gi: enough for one ~35 GB Q6 model's
-              # working set + cache_ram (2 GiB) + Python/runner
-              # overhead, but under the 32 GB host total so the
-              # node still has room for the small-runner pod and
-              # other workloads.  Bump higher only if OOMKilled
-              # recurs and you have headroom.
-              memory: "20Gi"
+              # 20Gi was still OOMKilled (12 restarts in 16h observed
+              # 2026-05-21).  The model file's mmap page cache grows
+              # under cgroup v2 accounting and eventually trips the cap.
+              # Bumped to 24 GiB — still leaves ~8 GiB headroom on the
+              # 32 GB host for kubelet + other workloads.  If OOM
+              # recurs, the next thing to investigate is a real leak
+              # in our code rather than just bumping the cap further.
+              memory: "24Gi"
               cpu: "8"
           volumeMounts:
             - name: models
