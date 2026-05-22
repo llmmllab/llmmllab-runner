@@ -18,6 +18,8 @@ from utils.logging import llmmllogger
 
 logger = llmmllogger.bind(component="DCGMMetrics")
 
+logger = llmmllogger.bind(component="DCGMMetrics")
+
 
 # Mapping of NVIDIA dcgm-exporter Prometheus metric names to our
 # internal Prometheus gauge keys (see middleware/prometheus_metrics.py
@@ -107,8 +109,15 @@ async def scrape_dcgm_metrics() -> Dict[str, Dict[str, float]]:
             resp = await client.get(DCGM_EXPORTER_URL)
             resp.raise_for_status()
             raw = resp.text
+    except httpx.ConnectError as e:
+        logger.warning(
+            f"DCGM exporter connection failed: {e}. "
+            f"Ensure DCGM exporter sidecar is running at {DCGM_EXPORTER_URL}"
+        )
+    except httpx.HTTPError as e:
+        logger.warning(f"DCGM exporter HTTP error: {e}")
     except Exception as e:
-        logger.debug(f"DCGM scrape failed: {e}")
+        logger.warning(f"DCGM scrape failed: {e}")
         return {}
 
     samples = _parse_prometheus_text(raw)
