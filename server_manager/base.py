@@ -332,6 +332,16 @@ class BaseServerManager(ABC):
             server_id = getattr(self, "_server_id", "") or ""
 
             with pipe:
+                # Compiled here once per drain thread instead of per line.
+                # Matches llama.cpp's "n_past = X, slot.prompt.tokens.size() = Y"
+                # which fires on EVERY prompt-processing entry (not just on
+                # cache-invalidation warnings).  Captures the true per-turn
+                # cache-hit ratio: X cached, Y total, hit% = X/Y.
+                import re as _re_local
+                _n_past_re = _re_local.compile(
+                    r"task (\d+) \| n_past = (\d+), slot\.prompt\.tokens\.size\(\) = (\d+)"
+                )
+
                 for line in iter(pipe.readline, ""):
                     if not line:
                         continue
@@ -352,6 +362,36 @@ class BaseServerManager(ABC):
                                 if resolved:
                                     extra_kwargs["session_id"] = resolved
                                     extra_kwargs["slot_id"] = sid
+
+                                    # Emit a structured per-turn cache-hit
+                                    # event as soon as we see llama.cpp's
+                                    # "n_past = X" line.  This lets us
+                                    # track cache hit rate per turn without
+                                    # waiting for the divergence-warning
+                                    # branch (which only fires when llama.cpp
+                                    # has to invalidate checkpoints).
+                                    m = _n_past_re.search(stripped)
+                                    if m:
+                                        try:
+                                            task_id = int(m.group(1))
+                                            n_past = int(m.group(2))
+                                            n_prompt = int(m.group(3))
+                                            hit_pct = (
+                                                (100.0 * n_past / n_prompt)
+                                                if n_prompt
+                                                else 0.0
+                                            )
+                                            log_fn(
+                                                "Slot cache-hit per-turn",
+                                                session_id=resolved,
+                                                slot_id=sid,
+                                                task_id=task_id,
+                                                n_past=n_past,
+                                                n_prompt=n_prompt,
+                                                cache_hit_pct=round(hit_pct, 2),
+                                            )
+                                        except Exception:
+                                            pass
                         except Exception:
                             # Best-effort enrichment; never break the drain.
                             pass
