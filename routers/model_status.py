@@ -1,4 +1,10 @@
-"""Model status router - exposes model in-use status for multi-runner session prioritization."""
+"""Model status router - exposes model in-use status for external observability.
+
+These endpoints provide model usage telemetry for dashboards, health checks,
+and multi-tier orchestration.  Session prioritization is handled at the API
+layer (runner_client::_select_runner), so these endpoints are informational
+rather than load-bearing.
+"""
 
 from typing import Any, Dict, List
 from datetime import datetime
@@ -38,8 +44,8 @@ def get_model_status(
     """Get the in-use status for a specific model.
 
     Returns whether the model is currently being used by any active server.
-    Useful for API clients to determine which runner to route sessions to
-    when the same model exists on multiple runners.
+    Primarily useful for external dashboards and health-check integrations.
+    (Session routing is handled at the API layer, not via this endpoint.)
 
     Response:
     - `in_use`: boolean indicating if model is actively being used
@@ -79,7 +85,7 @@ def get_all_model_status():
     """Get in-use status for all models.
 
     Returns a list of all models with their current in-use status.
-    Useful for API clients to discover which models are available and which are busy.
+    Useful for external dashboards and observability tooling.
     """
     cache = get_server_cache()
     loader = get_model_loader()
@@ -109,8 +115,8 @@ def get_all_model_status():
 def get_available_models():
     """Get list of models that are NOT currently in use.
 
-    Returns models where in_use is False. Useful for API clients to
-    discover which runners have available capacity for new sessions.
+    Returns models where in_use is False. Useful for external dashboards
+    and multi-tier orchestration outside the API service.
     """
     cache = get_server_cache()
     loader = get_model_loader()
