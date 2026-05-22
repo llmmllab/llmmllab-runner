@@ -228,7 +228,13 @@ def _stable_model_key(server_id: str) -> str:
     if not server_id:
         return ""
     try:
-        from cache import server_cache  # local import to avoid cycles at module-load
+        # The singleton lives in app.py — cache.py only exports the
+        # ServerCache *class*.  The previous "from cache import
+        # server_cache" import silently failed (caught by the broad
+        # except), falling through to `return server_id`, which made
+        # every save filename use the ephemeral server_id.  Result:
+        # every cross-pod-restart restore failed to find its file.
+        from app import server_cache  # noqa: WPS433 — late import to avoid cycle
         entry = server_cache._servers.get(server_id)
         if entry is not None:
             model_id = getattr(entry, "model_id", None) or server_id
