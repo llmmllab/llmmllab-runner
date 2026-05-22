@@ -129,6 +129,16 @@ _slot_lrus: Dict[str, SlotLRU] = {}
 _slot_lrus_lock = asyncio.Lock()
 
 
+# server_id -> set of session_ids for whom the slot's in-memory KV is
+# considered fresh enough that we DON'T need to restore from disk on the
+# next request.  Restoring when the in-memory state is already correct
+# corrupts llama.cpp's token-position metadata and forces a full
+# re-prefill (n_past drops to 32).  We add a session here the first
+# time we forward a request for it on a given server; we remove it when
+# the LRU evicts that session.
+_seen_session_on_server: Dict[str, set] = {}
+
+
 # Reverse lookup used by the subprocess log drain in server_manager/base.py
 # to attribute llama.cpp stdout/stderr lines (which only know slot IDs) to
 # the session_id pinned to that slot.  Cheap, lock-free (SlotLRU._map mutates
@@ -1131,17 +1141,54 @@ async def proxy_request(request: Request, server_id: str, path: str):
             client=pool_client,
         ):
             _record_saved_file(old_session, server_id)
+        # The evicted session's in-memory KV on this server is GONE
+        # (the slot now holds the new session's data).  Drop the
+        # "seen" mark so the evicted session's next request restores
+        # from disk instead of trusting whatever's in memory.
+        _seen_session_on_server.get(server_id, set()).discard(old_session)
 
-    if persistence_on and slot_id is not None and session_id:
-        if _save_file_exists(session_id, server_id):
-            new_file = _slot_file_path(session_id, server_id)
-            await _restore_slot(
-                target_host,
-                slot_id,
-                new_file,
-                session_id=session_id,
-                client=pool_client,
-            )
+    # Only RESTORE from disk when the slot's in-memory KV is NOT already
+    # valid for this session.  Two cases qualify:
+    #
+    #   (a) ``evicted_pair is not None`` — the LRU touch just reassigned
+    #       this slot from another session to us; the in-memory KV
+    #       belongs to that other session and must be replaced.
+    #
+    #   (b) The slot was freshly allocated by the LRU (no prior session
+    #       was pinned to it).  We detect this by checking whether the
+    #       SlotLRU's map size was ZERO before the touch — but that
+    #       check is expensive; the simpler proxy is "is this the
+    #       first request we've seen for this session on this server
+    #       since startup?", tracked via ``_seen_session_on_server``.
+    #
+    # The OLD behaviour (restore whenever a save file exists) breaks
+    # the cache in the steady-state path: if a session is pinned to
+    # slot N and the in-memory KV is the most recent state (from the
+    # previous turn that just saved), restoring from disk overwrites
+    # llama.cpp's internal token-position metadata.  The next request
+    # then sees the slot as fresh — n_past drops to 32, llama.cpp
+    # logs "forcing full prompt re-processing", and all the saved
+    # checkpoints get erased.  Confirmed empirically 2026-05-22:
+    # task 252 (no restore) hit n_past=68,347; task 348 on the same
+    # slot (with restore) hit n_past=32.
+    needs_restore = persistence_on and slot_id is not None and session_id and (
+        evicted_pair is not None
+        or session_id not in _seen_session_on_server.get(server_id, set())
+    )
+    if needs_restore and _save_file_exists(session_id, server_id):
+        new_file = _slot_file_path(session_id, server_id)
+        await _restore_slot(
+            target_host,
+            slot_id,
+            new_file,
+            session_id=session_id,
+            client=pool_client,
+        )
+    # Mark this (server, session) as seen so future requests on the same
+    # slot don't restore again.  Cleared if the session is evicted (see
+    # SlotLRU.touch eviction handling above).
+    if session_id and is_chat_completion:
+        _seen_session_on_server.setdefault(server_id, set()).add(session_id)
 
     # Mark server as in-use during request
     server_cache.increment_use(server_id)
