@@ -355,6 +355,13 @@ All configuration is environment-variable-driven via `.env`. See `config.py` for
 | `LLAMA_METRICS_INTERVAL_SEC` | `15` | Llama.cpp server metrics scraping interval (seconds) |
 | `NODE_NAME` | *(empty)* | Kubernetes node name (set via downward API); used to filter DCGM metrics to the local node |
 
+### Task Queue
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `QUEUE_AGING_LOW_TO_MEDIUM_SEC` | `60` | Seconds before a queued task ages from low to medium priority |
+| `QUEUE_AGING_MEDIUM_TO_HIGH_SEC` | `120` | Seconds before a queued task ages from medium to high priority |
+
 ### Logging & Observability
 
 | Variable | Default | Description |
