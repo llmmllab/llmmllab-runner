@@ -426,6 +426,71 @@ async def aclose_all_clients() -> None:
             logger.debug("Error closing upstream client", error=str(e))
 
 
+async def save_all_active_slots() -> int:
+    """Save every slot currently pinned in a SlotLRU to disk.
+
+    Called from app shutdown (SIGTERM path).  Iterates every server's
+    SlotLRU, and for each (session_id, slot_id) pair issues one
+    /slots/{id}?action=save call to the upstream llama.cpp server.
+    Best-effort: individual save failures are logged but don't stop the
+    sweep.
+
+    Returns the number of slots successfully persisted.
+    """
+    if not SLOT_SAVE_DIR:
+        return 0
+    from app import server_cache  # late import — avoid cycle
+
+    # Snapshot the LRUs so we don't iterate while concurrent requests
+    # mutate them.  After this point, even if a request comes in and
+    # rewrites the slot's KV, we save what we have right now.
+    snapshots: List[Tuple[str, str, str, int]] = []
+    for server_id, lru in list(_slot_lrus.items()):
+        entry = server_cache.get(server_id)
+        if entry is None:
+            continue
+        target_host = f"http://127.0.0.1:{entry.port}"
+        # SlotLRU._map is session_id → slot_id.  Take a snapshot copy.
+        for session_id, slot_id in list(lru._map.items()):
+            snapshots.append((server_id, target_host, session_id, slot_id))
+
+    if not snapshots:
+        logger.info("save_all_active_slots: no active slots to persist")
+        return 0
+
+    logger.info(
+        "save_all_active_slots: persisting active slots",
+        extra={"count": len(snapshots)},
+    )
+
+    saved = 0
+    for server_id, target_host, session_id, slot_id in snapshots:
+        try:
+            slot_file = _slot_file_path(session_id, server_id)
+            # Use a fresh short-lived client — the pooled clients may
+            # already be closing as part of shutdown.
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                ok = await _save_slot(
+                    target_host,
+                    slot_id,
+                    slot_file,
+                    session_id=session_id,
+                    client=client,
+                )
+                if ok:
+                    _record_saved_file(session_id, server_id)
+                    saved += 1
+        except Exception as e:
+            logger.warning(
+                "save_all_active_slots: save raised",
+                session_id=session_id,
+                slot_id=slot_id,
+                server_id=server_id,
+                error=str(e),
+            )
+    return saved
+
+
 # ---------------------------------------------------------------------------
 # Session activity tracking (consumed by app.py's slot cleanup task)
 # ---------------------------------------------------------------------------
@@ -737,8 +802,16 @@ async def _stream_upstream(
 
     The client is owned by the per-server pool and is NOT closed here.
     Decrements the server's use_count when the stream fully drains or the
-    downstream client disconnects.  Save-on-evict + restore-before-request
-    happen outside this function, so we no longer save on stream drain.
+    downstream client disconnects.
+
+    Persistence behaviour: when called with a non-empty ``slot_file`` and
+    ``session_id``, the slot's KV state is saved to disk AFTER the stream
+    drains successfully.  This is the "save after every turn" half of the
+    aggressive-persistence design — combined with save-on-evict (in
+    ``proxy_request``) and save-on-SIGTERM (in ``app.py`` lifespan), it
+    ensures that the next request for the same session has a fresh disk
+    snapshot to restore from, regardless of how the slot's in-memory KV
+    was lost (LRU eviction, unified-KV pressure, pod restart, OOM kill).
     """
     try:
         response = await client.send(
@@ -765,6 +838,15 @@ async def _stream_upstream(
         if k.lower() not in ("transfer-encoding", "content-length")
     }
 
+    # Only save on a 2xx outcome — a 4xx/5xx upstream response means the
+    # slot's KV is in an undefined state and we'd be persisting garbage.
+    should_save_after = (
+        bool(slot_file)
+        and bool(session_id)
+        and bool(target_host)
+        and 200 <= status_code < 300
+    )
+
     async def upstream_iterator():
         try:
             async for chunk in response.aiter_bytes():
@@ -777,6 +859,28 @@ async def _stream_upstream(
             from app import server_cache
 
             server_cache.decrement_use(server_id)
+
+            # Save the slot's KV to disk now that the turn's tokens have
+            # been written into it.  Best-effort: failure here doesn't
+            # affect the response the client already received.
+            if should_save_after:
+                try:
+                    saved = await _save_slot(
+                        target_host,
+                        slot_id,
+                        slot_file,
+                        session_id=session_id,
+                        client=client,
+                    )
+                    if saved:
+                        _record_saved_file(session_id, server_id)
+                except Exception as exc:
+                    logger.warning(
+                        "Post-stream slot save raised",
+                        session_id=session_id,
+                        slot_id=slot_id,
+                        error=str(exc),
+                    )
 
     return StreamingResponse(
         content=upstream_iterator(),
@@ -1066,6 +1170,34 @@ async def proxy_request(request: Request, server_id: str, path: str):
                 resp_content = b""
                 async for chunk in response.aiter_bytes():
                     resp_content += chunk
+
+                # Save-after-turn for the non-streaming path.  Mirrors the
+                # post-stream save in ``_stream_upstream``.  Only on 2xx —
+                # a 4xx/5xx upstream means the slot state is undefined.
+                if (
+                    persistence_on
+                    and slot_id is not None
+                    and session_id
+                    and 200 <= response.status_code < 300
+                ):
+                    try:
+                        new_file = _slot_file_path(session_id, server_id)
+                        saved = await _save_slot(
+                            target_host,
+                            slot_id,
+                            new_file,
+                            session_id=session_id,
+                            client=pool_client,
+                        )
+                        if saved:
+                            _record_saved_file(session_id, server_id)
+                    except Exception as exc:
+                        logger.warning(
+                            "Post-completion slot save raised (non-streaming)",
+                            session_id=session_id,
+                            slot_id=slot_id,
+                            error=str(exc),
+                        )
 
                 return Response(
                     content=resp_content,

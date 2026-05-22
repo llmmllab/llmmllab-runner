@@ -214,6 +214,24 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                 await task
             except asyncio.CancelledError:
                 pass
+    # Save every active slot's KV to disk BEFORE we close upstream
+    # connections.  This is the SIGTERM half of the aggressive-persistence
+    # design — every session that has a pinned slot at shutdown time
+    # leaves a fresh file in SLOT_SAVE_DIR, so the next pod start can
+    # restore it on the session's first request.  Bounded by the
+    # container's terminationGracePeriodSeconds (default 30s in our
+    # deployment.yaml); each save is one HTTP call to llama.cpp's
+    # /slots/N?action=save endpoint, typically a few hundred ms.
+    try:
+        from proxy.router import save_all_active_slots
+        save_count = await save_all_active_slots()
+        logger.info(
+            "Persisted active slots on shutdown",
+            extra={"saved": save_count},
+        )
+    except Exception as e:
+        logger.warning(f"save_all_active_slots during shutdown failed: {e}")
+
     # Close the pooled httpx clients used by the proxy.  Background tasks
     # above may have held connections; close after they're cancelled but
     # before we kill the upstream llama.cpp processes so any in-flight
