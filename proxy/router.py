@@ -572,6 +572,22 @@ def _sse_to_nonstreaming(chunks: bytes, model: str) -> Optional[Dict[str, Any]]:
     return result
 
 
+_FILENAME_UNSAFE_RE = _re.compile(r"[^A-Za-z0-9._-]")
+
+
+def _sanitize_for_filename(s: str) -> str:
+    """Replace filesystem-unsafe characters (notably ``:`` from the
+    ``pck:`` session-id prefix) with ``_``.
+
+    llama.cpp's ``/slots/{id}?action=save`` endpoint validates the
+    ``filename`` parameter and returns HTTP 400 if it contains characters
+    like ``:`` or ``/``.  The mapping is one-way + lossy in principle,
+    but session ids only contain hex + dashes plus the optional ``pck:``
+    prefix, so the collision risk is effectively zero.
+    """
+    return _FILENAME_UNSAFE_RE.sub("_", s)
+
+
 def _slot_file_path(session_id: str, server_id: str = "") -> str:
     """Build the absolute path for a session's slot cache file.
 
@@ -579,11 +595,17 @@ def _slot_file_path(session_id: str, server_id: str = "") -> str:
     the ephemeral ``server_id`` so the file survives runner restarts.
     Different models still get different files (preventing cross-model
     restore failures from incompatible tensor shapes).
+
+    The session id is filename-sanitised before being included in the
+    path — llama.cpp rejects names with ``:`` (HTTP 400 from
+    ``/slots/{id}?action=save``), which broke every save attempt for
+    ``pck:*`` openclaw sessions.
     """
+    safe_sid = _sanitize_for_filename(session_id)
     model_key = _stable_model_key(server_id)
     if model_key:
-        return f"{SLOT_SAVE_DIR}/slot_{session_id}_{model_key}.bin"
-    return f"{SLOT_SAVE_DIR}/slot_{session_id}.bin"
+        return f"{SLOT_SAVE_DIR}/slot_{safe_sid}_{model_key}.bin"
+    return f"{SLOT_SAVE_DIR}/slot_{safe_sid}.bin"
 
 
 # Legacy hash-based resolver kept for tests that still import it.
