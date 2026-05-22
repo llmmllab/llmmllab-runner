@@ -96,8 +96,15 @@
     parallel: 4
     is_default: True
     split_mode: "layer"
-    spec_type_mtp: true
-    spec_draft_n_max: 3
+    # spec_type_mtp + spec_draft_n_max disabled 2026-05-22 to test
+    # whether MTP speculative decoding is the cause of slot KV cache
+    # invalidations under concurrent load.  llama.cpp was emitting
+    # "forcing full prompt re-processing due to lack of cache data"
+    # immediately after a successful slot restore (n_restored=58k), so
+    # n_past dropped to 32 every turn for the claude-code session.
+    # Re-enable both if cache reuse stays broken without them.
+    # spec_type_mtp: true
+    # spec_draft_n_max: 3
     kv_unified: True
   pipeline: llama
   lora_weights: []
