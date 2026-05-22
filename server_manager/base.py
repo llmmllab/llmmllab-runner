@@ -333,13 +333,28 @@ class BaseServerManager(ABC):
 
             with pipe:
                 # Compiled here once per drain thread instead of per line.
-                # Matches llama.cpp's "n_past = X, slot.prompt.tokens.size() = Y"
-                # which fires on EVERY prompt-processing entry (not just on
-                # cache-invalidation warnings).  Captures the true per-turn
-                # cache-hit ratio: X cached, Y total, hit% = X/Y.
+                #
+                # Two patterns from llama.cpp's prompt-processing stage:
+                #
+                # (a) ``n_past = X, slot.prompt.tokens.size() = Y`` — fires
+                #     only on the WARN branch (e.g. cache_reuse rejection,
+                #     checkpoint erase).  Gives us the cached prefix size
+                #     directly: X cached / Y total.
+                #
+                # (b) ``prompt processing, n_tokens = X, progress = 1.00,
+                #     t = Y s / Z tokens per second`` — fires on the INFO
+                #     branch at the END of prompt processing for every turn.
+                #     Gives us the tokens processed (i.e. NOT cached) in
+                #     this turn plus the prefill wall-time.  Combined with
+                #     the body-size fingerprint on the API side we can
+                #     reconstruct the cache-hit ratio on every turn.
                 import re as _re_local
                 _n_past_re = _re_local.compile(
                     r"task (\d+) \| n_past = (\d+), slot\.prompt\.tokens\.size\(\) = (\d+)"
+                )
+                _print_timing_re = _re_local.compile(
+                    r"task (\d+) \| prompt processing, n_tokens = +(\d+), "
+                    r"progress = 1\.00, t = +([\d.]+) s / +([\d.]+) tokens"
                 )
 
                 for line in iter(pipe.readline, ""):
@@ -363,13 +378,9 @@ class BaseServerManager(ABC):
                                     extra_kwargs["session_id"] = resolved
                                     extra_kwargs["slot_id"] = sid
 
-                                    # Emit a structured per-turn cache-hit
-                                    # event as soon as we see llama.cpp's
-                                    # "n_past = X" line.  This lets us
-                                    # track cache hit rate per turn without
-                                    # waiting for the divergence-warning
-                                    # branch (which only fires when llama.cpp
-                                    # has to invalidate checkpoints).
+                                    # Pattern (a) — warn branch with full
+                                    # n_past + n_prompt.  When it fires we
+                                    # can compute hit_pct directly.
                                     m = _n_past_re.search(stripped)
                                     if m:
                                         try:
@@ -389,6 +400,37 @@ class BaseServerManager(ABC):
                                                 n_past=n_past,
                                                 n_prompt=n_prompt,
                                                 cache_hit_pct=round(hit_pct, 2),
+                                                source="n_past_warn",
+                                            )
+                                        except Exception:
+                                            pass
+
+                                    # Pattern (b) — info branch, end of
+                                    # prompt processing.  Fires once per
+                                    # turn.  Gives us tokens processed
+                                    # (NOT cached) + prefill wall-time.
+                                    # Pair with the API-side fingerprint
+                                    # body_bytes to compute approximate
+                                    # cache hit rate.
+                                    m = _print_timing_re.search(stripped)
+                                    if m:
+                                        try:
+                                            task_id = int(m.group(1))
+                                            n_processed = int(m.group(2))
+                                            t_seconds = float(m.group(3))
+                                            tok_per_sec = float(m.group(4))
+                                            log_fn(
+                                                "Slot prefill complete",
+                                                session_id=resolved,
+                                                slot_id=sid,
+                                                task_id=task_id,
+                                                n_processed=n_processed,
+                                                prefill_seconds=round(
+                                                    t_seconds, 2
+                                                ),
+                                                prefill_tokens_per_sec=round(
+                                                    tok_per_sec, 2
+                                                ),
                                             )
                                         except Exception:
                                             pass
