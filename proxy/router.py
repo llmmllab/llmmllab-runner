@@ -883,32 +883,84 @@ async def _stream_upstream(
             server_cache.decrement_use(server_id)
 
             # Save the slot's KV to disk now that the turn's tokens have
-            # been written into it.  Best-effort: failure here doesn't
-            # affect the response the client already received.
+            # been written into it.  Scheduled as a detached task — we
+            # do NOT await it here.  Reason: when the downstream client
+            # disconnects (claude-cli closes the SSE stream as soon as
+            # it sees the final event), FastAPI cancels this generator;
+            # any await inside this finally is interrupted by
+            # asyncio.CancelledError before completing.  CancelledError
+            # extends BaseException (not Exception) so it bypasses the
+            # save's own try/except.  Detaching the save lets it run to
+            # completion in the background, decoupled from the
+            # client-facing stream lifecycle.
             if should_save_after:
-                try:
-                    saved = await _save_slot(
-                        target_host,
-                        slot_id,
-                        slot_file,
-                        session_id=session_id,
-                        client=client,
-                    )
-                    if saved:
-                        _record_saved_file(session_id, server_id)
-                except Exception as exc:
-                    logger.warning(
-                        "Post-stream slot save raised",
-                        session_id=session_id,
-                        slot_id=slot_id,
-                        error=str(exc),
-                    )
+                _schedule_post_turn_save(
+                    target_host=target_host,
+                    slot_id=slot_id,
+                    slot_file=slot_file,
+                    session_id=session_id,
+                    server_id=server_id,
+                )
 
     return StreamingResponse(
         content=upstream_iterator(),
         status_code=status_code,
         headers=clean_headers,
     )
+
+
+# Background save-task lifecycle ------------------------------------------
+# Keep strong references to in-flight save tasks so the event loop doesn't
+# garbage-collect them mid-write.  Cleared as each task completes.
+_pending_saves: set = set()
+
+
+def _schedule_post_turn_save(
+    *,
+    target_host: str,
+    slot_id: int,
+    slot_file: str,
+    session_id: str,
+    server_id: str,
+) -> None:
+    """Fire-and-forget the post-turn KV save.
+
+    The save runs as an ``asyncio.create_task`` so the parent request can
+    return immediately (and survive client disconnects without aborting
+    the save mid-write).  Failures are logged inside the task; nothing
+    propagates back to the caller.
+    """
+    async def _runner() -> None:
+        try:
+            # Short-lived client; the pooled one may be in the middle of
+            # closing if we're racing a shutdown.
+            async with httpx.AsyncClient(timeout=30.0) as save_client:
+                saved = await _save_slot(
+                    target_host,
+                    slot_id,
+                    slot_file,
+                    session_id=session_id,
+                    client=save_client,
+                )
+                if saved:
+                    _record_saved_file(session_id, server_id)
+        except Exception as exc:  # pragma: no cover — defensive
+            logger.warning(
+                "Background post-turn save raised",
+                session_id=session_id,
+                slot_id=slot_id,
+                error=str(exc),
+            )
+
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        # No event loop — can't schedule.  Should not happen from inside
+        # an async iterator's finally, but guard anyway.
+        return
+    task = loop.create_task(_runner())
+    _pending_saves.add(task)
+    task.add_done_callback(_pending_saves.discard)
 
 
 # ---------------------------------------------------------------------------
