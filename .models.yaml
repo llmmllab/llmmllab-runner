@@ -322,7 +322,7 @@
     original_ctx: 0
     diffusion_model_path: /models/qwen-image/2512/q4_k_m.gguf
     vae_path: /models/qwen-image/vae.safetensors
-    text_encoder_path: /models/qwen2.5/7b/q4_k_m.gguf
+    text_encoder_path: /models/qwen2.5/7b/q4_k_xl.gguf
     text_encoder_kind: llm
   parameters:
     # Recommended defaults from the unsloth tutorial; the api applies
@@ -334,6 +334,10 @@
     width: 1024
     height: 1024
     seed: -1
+    # Pin sd-server to a 24 GB 3090 — qwen-image's 13 GB diffusion
+    # model can't fit on the 12 GB 3060 at device 0.  Translated to
+    # CUDA_VISIBLE_DEVICES by SDCppServerManager._build_subprocess_env.
+    main_gpu: 2
   pipeline: qwen-image
   provider: stable_diffusion_cpp
 
@@ -367,7 +371,7 @@
     original_ctx: 0
     diffusion_model_path: /models/qwen-image-edit/2511/q4_k_m.gguf
     vae_path: /models/qwen-image/vae.safetensors
-    text_encoder_path: /models/qwen2.5/7b/q4_k_m.gguf
+    text_encoder_path: /models/qwen2.5/7b/q4_k_xl.gguf
     text_encoder_kind: llm
   parameters:
     # Img2img defaults — same diffusion / sampler tuning as Qwen-Image-2512
@@ -381,5 +385,8 @@
     height: 1024
     denoising_strength: 0.75
     seed: -1
+    # Pin to the OTHER 3090 so txt2img and img2img can be loaded
+    # simultaneously without racing for VRAM on the same card.
+    main_gpu: 1
   pipeline: qwen-image-edit
   provider: stable_diffusion_cpp

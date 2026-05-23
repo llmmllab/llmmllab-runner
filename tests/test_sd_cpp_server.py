@@ -112,3 +112,41 @@ def test_sd_server_manager_skips_context_validation():
     model = _make_sd_model()
     mgr = SDCppServerManager(model=model, port=9999)
     assert mgr._validate_context_size() is True
+
+
+def test_sd_server_manager_pins_cuda_visible_devices_when_main_gpu_set():
+    """``main_gpu`` on the model parameters must propagate to
+    ``CUDA_VISIBLE_DEVICES`` on the child process — otherwise sd-server
+    defaults to device 0 and crashes with OOM on smaller cards."""
+    import os
+    from models import ModelParameters
+
+    model = _make_sd_model()
+    model.parameters = ModelParameters(main_gpu=2)
+    mgr = SDCppServerManager(model=model, port=9999)
+
+    env = mgr._build_subprocess_env()
+    assert env is not None, "Env must be set when main_gpu >= 0"
+    assert env["CUDA_VISIBLE_DEVICES"] == "2"
+    # Other env vars should still be there (it's os.environ.copy() + override).
+    assert "PATH" in env or os.environ.get("PATH") is None
+
+
+def test_sd_server_manager_inherits_env_when_main_gpu_unset():
+    """``main_gpu = -1`` (the default) should NOT touch the env — child
+    inherits whatever the runner has."""
+    model = _make_sd_model()
+    # main_gpu defaults to -1 on ModelParameters
+    mgr = SDCppServerManager(model=model, port=9999)
+
+    env = mgr._build_subprocess_env()
+    assert env is None
+
+
+def test_sd_server_manager_inherits_env_when_parameters_missing():
+    """No ``parameters`` block at all should also be a no-op."""
+    model = _make_sd_model()
+    model.parameters = None
+    mgr = SDCppServerManager(model=model, port=9999)
+
+    assert mgr._build_subprocess_env() is None

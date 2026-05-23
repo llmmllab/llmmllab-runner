@@ -22,7 +22,8 @@ unchanged, so callers reach sd-server endpoints (e.g.
 ``/sdapi/v1/txt2img``) via the same mechanism.
 """
 
-from typing import List, Optional
+import os
+from typing import Dict, List, Optional
 
 import requests
 
@@ -87,6 +88,34 @@ class SDCppServerManager(BaseServerManager):
         # sd-server has no context window; nothing to validate.  Returning
         # True keeps BaseServerManager.start() on the happy path.
         return True
+
+    def _build_subprocess_env(self) -> Optional[Dict[str, str]]:
+        """Pin sd-server to a single CUDA device via ``CUDA_VISIBLE_DEVICES``.
+
+        sd-server defaults to CUDA device 0 and never auto-routes — the
+        ``ggml`` backend just allocates everything on the first device it
+        sees.  On this cluster device 0 is a 12 GB RTX 3060 which can't
+        physically hold a 13 GB Qwen-Image diffusion model: every retry
+        hits ``cudaMalloc out of memory`` the same way, regardless of how
+        many other models we evict.
+
+        We read ``model.parameters.main_gpu`` (a value that already exists
+        in the schema for llama.cpp) — when set to a non-negative integer
+        we override ``CUDA_VISIBLE_DEVICES`` on the child process so
+        sd-server only sees the chosen GPU.  ``-1`` (the default) means
+        "inherit", which leaves the historical behaviour unchanged.
+        """
+        params = self.model.parameters
+        main_gpu = getattr(params, "main_gpu", None) if params else None
+        if main_gpu is None or main_gpu < 0:
+            return None
+        env = os.environ.copy()
+        env["CUDA_VISIBLE_DEVICES"] = str(main_gpu)
+        self._logger.info(
+            f"sd-server will see only CUDA device {main_gpu} "
+            f"(CUDA_VISIBLE_DEVICES={main_gpu})"
+        )
+        return env
 
     def is_running(self) -> bool:
         """Mirror BaseServerManager.is_running but use ``/sdcpp/v1/capabilities``."""

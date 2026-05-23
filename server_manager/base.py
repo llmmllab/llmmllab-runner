@@ -196,6 +196,17 @@ class BaseServerManager(ABC):
     def get_api_endpoint(self, path: str) -> str:
         """Get the full URL for a specific API endpoint."""
 
+    def _build_subprocess_env(self) -> Optional[Dict[str, str]]:
+        """Build the environment dict passed to the child server process.
+
+        Default: ``None`` — child inherits the runner's environment.
+        Subclasses override when they need to scope a variable (e.g.
+        ``CUDA_VISIBLE_DEVICES`` to confine sd-server to a single GPU).
+        Returning ``None`` keeps the inheritance path so we don't have
+        to enumerate the parent env explicitly.
+        """
+        return None
+
     def start(self) -> bool:
         """Start the server process."""
         with self._lock:
@@ -224,7 +235,11 @@ class BaseServerManager(ABC):
                 self._logger.info(f"Starting server on port {self.port}")
                 self._logger.debug(f"Command: {' '.join(args)}")
 
-                # Start the process and capture output so we can log failures
+                # Start the process and capture output so we can log failures.
+                # ``_build_subprocess_env`` is a hook for subclasses that need
+                # to mutate the child env — e.g. SD pins CUDA_VISIBLE_DEVICES
+                # so it lands on a specific GPU instead of always CUDA:0.
+                env = self._build_subprocess_env()
                 self.process = subprocess.Popen(
                     args,
                     stdout=subprocess.PIPE,
@@ -232,6 +247,7 @@ class BaseServerManager(ABC):
                     stdin=subprocess.DEVNULL,
                     text=True,
                     bufsize=1,
+                    env=env,
                 )
 
                 # Log PID
@@ -525,6 +541,7 @@ class BaseServerManager(ABC):
                 stdin=subprocess.DEVNULL,
                 text=True,
                 bufsize=1,
+                env=self._build_subprocess_env(),
             )
             self.pid = self.process.pid
 
