@@ -44,6 +44,7 @@
     # slot_prompt_similarity: 0
     parallel: 4
     split_mode: "layer"
+    is_default: True
   pipeline: llama
   lora_weights: []
   provider: llama_cpp
@@ -94,7 +95,6 @@
     # slot_prompt_similarity: 0
     # MTP requires parallel=1 (llama.cpp limitation until parallel drafting support lands)
     parallel: 4
-    is_default: True
     split_mode: "layer"
     # spec_type_mtp + spec_draft_n_max disabled 2026-05-22 to test
     # whether MTP speculative decoding is the cause of slot KV cache
