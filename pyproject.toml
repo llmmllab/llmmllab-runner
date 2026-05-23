@@ -32,3 +32,11 @@ dev-dependencies = [
     "ruff>=0.6.0",
     "testcontainers[postgres]>=4.0.0",
 ]
+
+[tool.pytest.ini_options]
+# Limit discovery to our own ``tests/`` package — the vendors/ submodules
+# (llama.cpp, stable-diffusion.cpp) ship their own pytest suites that
+# depend on packages we don't install (e.g. the llama.cpp Python bindings),
+# so picking them up causes collection errors.
+testpaths = ["tests"]
+norecursedirs = ["vendors", ".git", "__pycache__", "node_modules"]

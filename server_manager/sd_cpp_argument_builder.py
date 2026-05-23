@@ -1,0 +1,67 @@
+"""Argument builder for the ``sd-server`` executable.
+
+stable-diffusion.cpp's server binary takes a small, fixed set of CLI flags
+that point at model weight files plus a listen-host / listen-port pair.
+Per-request generation parameters (steps, cfg_scale, sampler_name, …) are
+*not* CLI flags — those travel in the POST body to ``/sdapi/v1/txt2img``.
+
+The builder pulls weight paths from ``Model.details`` (we extended
+``ModelDetails`` with ``diffusion_model_path``, ``vae_path``,
+``text_encoder_path``, ``text_encoder_kind`` and ``clip_g_path``) and emits
+a list ready for ``subprocess.Popen``.
+"""
+
+from typing import List, Optional
+
+from config import SD_SERVER_EXECUTABLE
+from models import Model
+from utils.logging import llmmllogger
+
+logger = llmmllogger.bind(component="SDCppArgumentBuilder")
+
+
+class SDCppArgumentBuilder:
+    """Build the argv list for ``sd-server``."""
+
+    def __init__(self, model: Model, port: Optional[int] = None):
+        self.model = model
+        self.port = port
+
+    def build_args(self) -> List[str]:
+        args: List[str] = [SD_SERVER_EXECUTABLE]
+
+        details = self.model.details
+
+        if details.gguf_file:
+            # A single all-in-one .gguf — pass with --model.  Most SDXL/SD15
+            # bundles work this way; Qwen-Image splits things up.
+            args += ["--model", details.gguf_file]
+
+        if details.diffusion_model_path:
+            args += ["--diffusion-model", details.diffusion_model_path]
+
+        if details.vae_path:
+            args += ["--vae", details.vae_path]
+
+        if details.text_encoder_path:
+            flag_map = {
+                "llm": "--llm",
+                "clip_l": "--clip_l",
+                "t5xxl": "--t5xxl",
+            }
+            flag = flag_map.get(details.text_encoder_kind or "llm", "--llm")
+            args += [flag, details.text_encoder_path]
+
+        if details.clip_g_path:
+            args += ["--clip_g", details.clip_g_path]
+
+        if self.port:
+            args += ["--listen-port", str(self.port)]
+        args += ["--listen-ip", "127.0.0.1"]
+
+        # Verbose by default — sd-server is quiet otherwise and we want logs
+        # to flow through our drain threads.
+        args += ["-v"]
+
+        logger.debug(f"Built sd-server args: {' '.join(args)}")
+        return args

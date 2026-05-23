@@ -23,6 +23,7 @@ from routers import models as models_router
 from routers import servers as servers_router
 from routers import metrics as metrics_router
 from routers import status as status_router
+from routers import pipelines as pipelines_router
 from proxy import router as proxy_router
 from middleware import RequestIdMiddleware, PrometheusMiddleware
 from middleware.runner_metrics import (
@@ -261,6 +262,7 @@ app.include_router(servers_router.router)
 app.include_router(proxy_router.router)
 app.include_router(metrics_router.router)
 app.include_router(status_router.router)
+app.include_router(pipelines_router.router)
 app.add_middleware(RequestIdMiddleware)
 app.add_middleware(PrometheusMiddleware)
 

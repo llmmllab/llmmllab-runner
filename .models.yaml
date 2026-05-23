@@ -291,3 +291,38 @@
 #   pipeline: llama
 #   lora_weights: []
 #   provider: llama_cpp
+
+# ---------------------------------------------------------------------------
+# Qwen-Image-2512 (stable-diffusion.cpp / sd-server)
+#
+# Multi-file SD model: the diffusion DiT, a separate Qwen2.5-VL text encoder,
+# and the qwen-image VAE.  Paths must exist on the runner pod's PVC.  The
+# runner picks SDCppServerManager when provider == stable_diffusion_cpp.
+#
+# Tutorial: https://unsloth.ai/docs/models/tutorials/qwen-image-2512/stable-diffusion.cpp
+# Weights:  https://huggingface.co/unsloth/Qwen-Image-2512-GGUF
+# ---------------------------------------------------------------------------
+- id: qwen-image-2512
+  name: "Qwen-Image-2512 Q4_K_M"
+  model: "qwen-image-2512"
+  task: TextToImage
+  modified_at: "2026-05-23T00:00:00+00:00"
+  digest: "0000000000000000000000000000000000000000000000000000000000000000"
+  details:
+    format: gguf
+    family: qwen-image
+    families:
+      - qwen-image
+    parameter_size: 20B
+    quantization_level: Q4_K_M
+    precision: int4
+    dtype: int4
+    specialization: TextToImage
+    size: 12000000000
+    original_ctx: 0
+    diffusion_model_path: /models/qwen-image/qwen-image-2512-Q4_K_M.gguf
+    vae_path: /models/qwen-image/qwen_image_vae.safetensors
+    text_encoder_path: /models/qwen-image/Qwen2.5-VL-7B-Instruct-UD-Q4_K_XL.gguf
+    text_encoder_kind: llm
+  pipeline: qwen-image
+  provider: stable_diffusion_cpp

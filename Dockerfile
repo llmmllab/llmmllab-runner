@@ -1,7 +1,26 @@
 # syntax=docker/dockerfile:1.7
+#
+# llmmllab-runner Dockerfile.
+#
+# Builds the two native inference servers used by the runner — llama.cpp and
+# stable-diffusion.cpp — from their pinned git submodules under vendors/, then
+# packages them with the Python service into a CUDA 12.8 runtime image.
+#
+# Submodules
+# ----------
+#   vendors/llama.cpp              ggml-org/llama.cpp  (text inference)
+#   vendors/stable-diffusion.cpp   leejet/stable-diffusion.cpp (image inference)
+#
+# Both must be initialised before the build (the build context needs the source
+# tree on disk). The Makefile target `vendor-sync` runs the right git command
+# for you; CI runs it as the first step of `make docker-build`.
+#
+# To update either vendor, cd into its submodule, check out the desired tag /
+# commit, and commit the bumped pointer in the parent repo — there is no tag
+# arg to override.
 
 # ---------------------------------------------------------------------------
-# Stage 1 - compile llama.cpp with CUDA support
+# Stage 1 — compile llama.cpp with CUDA support from vendors/llama.cpp
 # ---------------------------------------------------------------------------
 FROM nvidia/cuda:12.8.1-cudnn-devel-ubuntu24.04 AS llama-builder
 
@@ -18,10 +37,10 @@ ENV CUDA_HOME=/usr/local/cuda \
 
 RUN ln -sf /usr/local/cuda/lib64/stubs/libcuda.so /usr/local/cuda/lib64/stubs/libcuda.so.1
 
-ARG LLAMA_CPP_TAG=b9209
-RUN git clone https://github.com/ggml-org/llama.cpp.git /llama.cpp \
-    && cd /llama.cpp \
-    && git checkout tags/${LLAMA_CPP_TAG} -b llmmll
+# Copy the pinned submodule source instead of cloning at build time. Using the
+# submodule means the version that gets baked into the image always matches
+# what was committed to git — no more "did CI grab a fresh tag?" surprises.
+COPY vendors/llama.cpp /llama.cpp
 
 WORKDIR /llama.cpp
 RUN cmake -B build \
@@ -31,7 +50,34 @@ RUN cmake -B build \
     && cmake --build build --config Release -j6
 
 # ---------------------------------------------------------------------------
-# Stage 2 - runtime image
+# Stage 2 — compile stable-diffusion.cpp with CUDA support
+# ---------------------------------------------------------------------------
+FROM nvidia/cuda:12.8.1-cudnn-devel-ubuntu24.04 AS sd-builder
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git wget curl \
+    build-essential cmake g++ ninja-build \
+    libcurl4-openssl-dev pkg-config ccache zstd \
+    && rm -rf /var/lib/apt/lists/*
+
+ENV CUDA_HOME=/usr/local/cuda \
+    LD_LIBRARY_PATH=${LD_LIBRARY_PATH}:/usr/local/cuda/lib64/stubs
+
+RUN ln -sf /usr/local/cuda/lib64/stubs/libcuda.so /usr/local/cuda/lib64/stubs/libcuda.so.1
+
+# Pinned by submodule. SD_CUDA target = SM 75 (T4) + SM 86 (RTX A6000 / 3090).
+COPY vendors/stable-diffusion.cpp /stable-diffusion.cpp
+
+WORKDIR /stable-diffusion.cpp
+RUN cmake -B build \
+    -DSD_CUDA=ON \
+    -DSD_BUILD_SERVER=ON \
+    -DCMAKE_CUDA_ARCHITECTURES="75;86" \
+    -DCMAKE_BUILD_TYPE=Release \
+    && cmake --build build --config Release -j6
+
+# ---------------------------------------------------------------------------
+# Stage 3 — runtime image
 # ---------------------------------------------------------------------------
 FROM nvidia/cuda:12.8.1-cudnn-runtime-ubuntu24.04
 
@@ -52,7 +98,9 @@ ENV PYTHONUNBUFFERED=1 \
     CUDA_DEVICE_ORDER=PCI_BUS_ID \
     CUDA_LAUNCH_BLOCKING=0 \
     RUNNER_PORT=8000 \
-    RUNNER_HOST=0.0.0.0
+    RUNNER_HOST=0.0.0.0 \
+    LLAMA_SERVER_EXECUTABLE=/llama.cpp/build/bin/llama-server \
+    SD_SERVER_EXECUTABLE=/stable-diffusion.cpp/build/bin/sd-server
 
 # Runtime-only apt deps (no compilers)
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -61,8 +109,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/* \
     && ln -sf /usr/bin/python3 /usr/bin/python
 
-# Compiled llama.cpp binaries
+# Compiled binaries from the build stages. We copy the entire build tree so
+# any shared libraries (libggml*.so, libstable-diffusion.so) stay alongside
+# their executables — sd-server in particular links against several .so files
+# emitted next to it in build/bin/.
 COPY --from=llama-builder /llama.cpp /llama.cpp
+COPY --from=sd-builder /stable-diffusion.cpp /stable-diffusion.cpp
 
 WORKDIR /app
 
@@ -76,8 +128,12 @@ COPY pyproject.toml ./
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-dev || true
 
-# Copy application source
+# Copy application source. We strip vendors/ from the runtime image — the
+# native binaries live under /llama.cpp and /stable-diffusion.cpp (copied
+# from the build stages above) and the C++ source trees would otherwise
+# add ~2 GB of unused artefacts to every image layer.
 COPY . ./
+RUN rm -rf /app/vendors
 
 EXPOSE 8000
 

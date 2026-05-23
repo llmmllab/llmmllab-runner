@@ -1,17 +1,33 @@
 # llmmllab-runner
 
-A FastAPI service that dynamically spawns and manages llama.cpp server instances on GPU nodes, proxying OpenAI-compatible API requests to the correct backend. Designed for Kubernetes deployments with NVIDIA GPU support.
+A FastAPI service that dynamically spawns and manages **llama.cpp** (text) and **stable-diffusion.cpp** (image) server instances on GPU nodes, plus runs an in-process **TRELLIS** pipeline for image-to-3D generation. Proxies OpenAI- and Anthropic-compatible API requests to the right backend. Designed for Kubernetes deployments with NVIDIA GPU support.
 
 ## Overview
 
-llmmllab-runner sits between the [llmmllab-api](https://github.com/LongStoryMedia/llmmllab-api) service and llama.cpp server processes. It is the inference backend — llmmllab-api handles authentication, billing, and request orchestration, while the runner manages the actual model loading and GPU execution.
+llmmllab-runner sits between the [llmmllab-api](https://github.com/LongStoryMedia/llmmllab-api) service and the inference backends. It is the inference layer — llmmllab-api handles authentication, billing, and request orchestration, while the runner manages model loading and GPU execution.
 
 Core responsibilities:
 
-- **Server Lifecycle** — Spawns a new `llama-server` process for each unique model requested, reuses existing instances across clients, and evicts idle servers based on configurable timeouts
-- **Request Proxying** — Forwards HTTP requests (including SSE streaming for chat completions) to the correct local llama.cpp instance, aborting upstream generation when clients disconnect
+- **Server Lifecycle** — Spawns a new `llama-server` (text) or `sd-server` (image) process for each unique model requested, reuses existing instances across clients, and evicts idle servers based on configurable timeouts
+- **In-process pipelines** — TRELLIS image-to-3D runs inside the runner process under `/v1/pipelines/img23d/run`; the abstraction at `pipelines/base.py` makes it easy to add more Python-only models (HF diffusers, ComfyUI nodes, etc.)
+- **Request Proxying** — Forwards HTTP requests (including SSE streaming for chat completions) to the correct local server, aborting upstream generation when clients disconnect
 - **GPU Resource Management** — Tracks VRAM usage, applies power caps, monitors thermals, and evicts idle models under VRAM pressure to make room for new ones
 - **Model Registry** — Loads model definitions from a YAML config, including GGUF file paths, inference parameters, and LoRA weights
+
+### Pinned native dependencies (`vendors/`)
+
+`vendors/llama.cpp` and `vendors/stable-diffusion.cpp` are git submodules pinned to a specific commit. The Dockerfile builds both with CUDA from the submodule source, so the runtime image always matches what's checked in to git — no implicit "we pulled master at build time" behaviour.
+
+Update either dependency with:
+
+```bash
+cd vendors/llama.cpp && git fetch && git checkout <tag-or-commit>
+cd ../..
+git add vendors/llama.cpp
+git commit -m "bump llama.cpp to <tag>"
+```
+
+The Makefile target `make vendor-sync` (`git submodule update --init --recursive`) initialises a fresh clone; `make vendor-status` shows the currently-pinned commits.
 
 ### Integration with llmmllab-api
 
@@ -238,6 +254,50 @@ See [Configuration](#configuration) for details.
 | `GET` | `/v1/status` | `{"startup_epoch": <unix_ms>, "now": <unix_ms>}` — fixed per process; callers detect runner restarts when `startup_epoch` changes and invalidate any cached `server_id` handles |
 | `GET` | `/metrics` | Prometheus exposition (see [Metrics](#metrics)) |
 
+### Image generation (stable-diffusion.cpp)
+
+`sd-server` from `vendors/stable-diffusion.cpp` is launched on demand for any model whose `.models.yaml` entry has `provider: stable_diffusion_cpp`. It's reachable through the same proxy:
+
+```bash
+# Acquire a server (same flow as llama.cpp)
+curl -X POST http://localhost:9000/v1/server/create \
+  -H "Content-Type: application/json" \
+  -d '{"model_id": "qwen-image-2512"}'
+
+# Send a txt2img request
+curl http://localhost:9000/v1/server/<server_id>/sdapi/v1/txt2img \
+  -H "Content-Type: application/json" \
+  -d '{"prompt":"a teacup with steam","width":1024,"height":1024,"steps":40,"cfg_scale":2.5,"sampler_name":"euler"}'
+```
+
+The response shape mirrors the AUTOMATIC1111 WebUI: `{"images":["<base64 PNG>"], "parameters": {...}}`. See [Adding a stable-diffusion.cpp model](#adding-a-stable-diffusioncpp-model).
+
+### Pipelines (in-process, e.g. TRELLIS img2-3D)
+
+Pipelines that don't have a standalone server are exposed at `/v1/pipelines/<name>/run`:
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET`  | `/v1/pipelines` | List registered pipelines and their `loaded` state |
+| `POST` | `/v1/pipelines/{name}/run` | Invoke the pipeline; lazy-loads weights on first call |
+| `POST` | `/v1/pipelines/{name}/unload` | Release GPU memory |
+
+The TRELLIS pipeline accepts:
+
+```json
+{
+  "image_b64": "<base64 PNG/JPEG>",
+  "seed": 42,
+  "ss_steps": 12,
+  "slat_steps": 12,
+  "formats": ["mesh", "gaussian"]
+}
+```
+
+and returns paths to the persisted `.glb` mesh and `.ply` gaussian-splat files plus an optional preview frame.
+
+> TRELLIS' CUDA extensions (`gsplat`, custom rasterizer) must be installed in the runner image for the pipeline to load. Without them the endpoint returns HTTP 503 with a structured message naming the missing dependency — the rest of the runner stays functional.
+
 ## Configuration
 
 All configuration is environment-variable-driven via `.env`:
@@ -302,6 +362,35 @@ Key fields:
 - **`parameters.micro_batch_size`** — Keep meaningfully smaller than `batch_size` (e.g. `512` vs `2048`) when running multiple slots so llama.cpp can interleave tokens from multiple slots inside each micro-batch instead of letting one slot monopolize prefill.
 - **`lora_weights`** — Optional list of LoRA adapters to load
 
+### Adding a stable-diffusion.cpp model
+
+Image models use the same YAML file but populate a different set of fields:
+
+```yaml
+- id: qwen-image-2512
+  name: "Qwen-Image-2512 Q4_K_M"
+  model: "qwen-image-2512"
+  task: TextToImage
+  modified_at: "2026-05-23T00:00:00+00:00"
+  digest: "0000000000000000000000000000000000000000000000000000000000000000"
+  details:
+    format: gguf
+    family: qwen-image
+    families: [qwen-image]
+    parameter_size: 20B
+    quantization_level: Q4_K_M
+    specialization: TextToImage
+    size: 12000000000
+    original_ctx: 0           # SD has no LLM-style context window
+    diffusion_model_path: /models/qwen-image/qwen-image-2512-Q4_K_M.gguf
+    vae_path: /models/qwen-image/qwen_image_vae.safetensors
+    text_encoder_path: /models/qwen-image/Qwen2.5-VL-7B-Instruct-UD-Q4_K_XL.gguf
+    text_encoder_kind: llm    # llm | clip_l | t5xxl
+  provider: stable_diffusion_cpp
+```
+
+The runner picks `SDCppServerManager` when it sees `provider: stable_diffusion_cpp` and translates the `details.*` paths to the matching `sd-server` flags (`--diffusion-model`, `--vae`, `--llm`/`--clip_l`/`--t5xxl`, `--clip_g`). For SDXL-style all-in-one GGUFs, set `details.gguf_file` and leave the split-file fields unset.
+
 ## Metrics
 
 The runner exposes Prometheus metrics at `/metrics`. Cardinality is intentionally bounded — no `session_id` labels.
@@ -354,8 +443,11 @@ make docker-build
 ```
 
 The Dockerfile is multi-stage:
-1. **Stage 1** — Compiles llama.cpp from source with CUDA support (tag `b8863`)
-2. **Stage 2** — Runtime image with the compiled binary, Python 3.12, and `uv` for dependency management
+1. **Stage 1 — `llama-builder`** — Compiles `llama.cpp` from `vendors/llama.cpp` with CUDA support
+2. **Stage 2 — `sd-builder`** — Compiles `stable-diffusion.cpp` from `vendors/stable-diffusion.cpp` with CUDA support
+3. **Stage 3 — runtime** — Copies the compiled `llama-server` and `sd-server` binaries plus their shared libraries into a CUDA 12.8 runtime image, then layers in Python 3.12 + `uv` and the runner's source
+
+`make docker-build` automatically runs `make vendor-sync` first to make sure the submodules are initialised before COPY.
 
 ### Run Locally
 

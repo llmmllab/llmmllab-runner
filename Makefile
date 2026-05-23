@@ -9,7 +9,7 @@ IMAGE    ?= llmmllab-runner
 TAG      ?= latest
 REGISTRY ?= 192.168.0.71:31500
 
-.PHONY: help install start start-reload validate clean test docker-build docker-run
+.PHONY: help install start start-reload validate clean test docker-build docker-run vendor-sync vendor-status
 
 ## Help
 help: ## Show this help
@@ -39,8 +39,15 @@ test: ## Run all tests
 test-unit: ## Run unit tests only
 	$(UV) run pytest tests/unit -v
 
+## Vendors (git submodules under vendors/)
+vendor-sync: ## Init and update llama.cpp + stable-diffusion.cpp submodules to the pinned commits
+	git submodule update --init --recursive
+
+vendor-status: ## Show pinned commit / current state of each vendor submodule
+	@git submodule status
+
 ## Docker
-docker-build: ## Build Docker image
+docker-build: vendor-sync ## Build Docker image (auto-syncs vendor submodules first)
 	docker build -t $(REGISTRY)/$(IMAGE):$(TAG) .
 
 docker-push: ## Push Docker image to registry

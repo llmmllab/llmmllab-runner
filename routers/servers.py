@@ -7,7 +7,8 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 from config import RUNNER_PORT, SERVER_START_OOM_RETRIES
-from server_manager import LlamaCppServerManager
+from models import ModelProvider
+from server_manager import LlamaCppServerManager, SDCppServerManager
 from utils.hardware_manager import hardware_manager
 from utils.logging import llmmllogger, _session_id_ctx
 from utils.model_loader import ModelLoader
@@ -204,10 +205,14 @@ async def create_server(request: Request, body: CreateServerRequest):
 
     session_id = _session_id_ctx.get() or request.headers.get("x-session-id")
 
-    manager = LlamaCppServerManager(
-        model=model,
-        session_id=session_id,
-    )
+    # Dispatch to the right native runtime based on the model's declared
+    # provider.  llama.cpp handles text/embeddings; stable-diffusion.cpp
+    # handles image generation (txt2img / img2img).  New providers slot in
+    # here without touching the proxy or cache.
+    if model.provider == ModelProvider.STABLE_DIFFUSION_CPP:
+        manager = SDCppServerManager(model=model, session_id=session_id)
+    else:
+        manager = LlamaCppServerManager(model=model, session_id=session_id)
 
     # Register as "starting" BEFORE starting the process to prevent duplicates
     server_id = server_cache.register_starting(

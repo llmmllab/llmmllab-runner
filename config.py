@@ -9,6 +9,13 @@ RUNNER_NAME = os.environ.get("RUNNER_NAME", "llmmllab-runner")
 LLAMA_SERVER_EXECUTABLE = os.environ.get(
     "LLAMA_SERVER_EXECUTABLE", "/llama.cpp/build/bin/llama-server"
 )
+SD_SERVER_EXECUTABLE = os.environ.get(
+    "SD_SERVER_EXECUTABLE", "/stable-diffusion.cpp/build/bin/sd-server"
+)
+# Image-output directory used by both the SD server manager (when run locally)
+# and the API layer for serving generated images.  The runner only uses this
+# for housekeeping/cleanup; the actual images are returned base64-encoded.
+SD_OUTPUT_DIR = os.environ.get("SD_OUTPUT_DIR", "/data/sd-out")
 MODELS_FILE_PATH = os.environ.get("MODELS_FILE_PATH", "")
 
 # Soft timeout (minutes): once a server has been idle (use_count == 0) for this
