@@ -22,8 +22,8 @@
   parameters:
     num_ctx: 200000
     repeat_last_n: 128
-    repeat_penalty: 0.5
-    temperature: 0.7
+    repeat_penalty: 0.7
+    temperature: 0.6
     seed: -1
     num_predict: -1
     top_k: 20
@@ -153,6 +153,57 @@
     kv_on_cpu: True
     # tensor_split: "0,1,1"
     main_gpu: 1
+    # n_cpu_moe: 10
+  pipeline: llama
+  lora_weights: []
+  provider: llama_cpp
+
+- id: Qwen3_6_35B_A3B_MTP
+  name: "Qwen3.6-35B-A3B-MTP"
+  model: "Qwen3.6-35B-A3B-MTP"
+  task: TextToText
+  modified_at: "2026-05-23T15:46:18.034942+00:00"
+  digest: d0ad78047bd0a583bfcb484e9defc63112c5f1f856e310dcf88dc48f2ebeae5b
+  size: 18536192288
+  details:
+    format: gguf
+    gguf_file: "/models/qwen3.6/35b-a3b/ud-iq4_nl.gguf"
+    family: qwen
+    families:
+      - qwen
+    parameter_size: 35.5B
+    quantization_level: IQ4_NL
+    precision: int4
+    dtype: int4
+    specialization: Text
+    size: 18536192288
+    original_ctx: 262144
+    clip_model_path: "/models/qwen3.6/35b-a3b/mmproj.gguf"
+    n_layers: 41
+    hidden_size: 2048
+    n_heads: 16
+    n_kv_heads: 2
+  parameters:
+    num_ctx: 200000
+    repeat_last_n: -1
+    repeat_penalty: 0
+    temperature: 0.7
+    seed: -1
+    num_predict: -1
+    top_k: 20
+    top_p: 0.95
+    min_p: 0.05
+    max_tokens: -1
+    n_parts: -1
+    batch_size: 2048
+    micro_batch_size: 1024
+    n_gpu_layers: -1
+    think: False
+    kv_on_cpu: True
+    tensor_split: "0,1,1"
+    main_gpu: 1
+    spec_type_mtp: true
+    spec_draft_n_max: 3
     # n_cpu_moe: 10
   pipeline: llama
   lora_weights: []
