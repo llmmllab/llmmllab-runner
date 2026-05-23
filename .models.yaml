@@ -324,5 +324,62 @@
     vae_path: /models/qwen-image/qwen_image_vae.safetensors
     text_encoder_path: /models/qwen-image/Qwen2.5-VL-7B-Instruct-UD-Q4_K_XL.gguf
     text_encoder_kind: llm
+  parameters:
+    # Recommended defaults from the unsloth tutorial; the api applies
+    # these when the request body omits the corresponding field.
+    # See https://unsloth.ai/docs/models/tutorials/qwen-image-2512/stable-diffusion.cpp
+    steps: 40
+    cfg_scale: 2.5
+    sampler_name: euler
+    width: 1024
+    height: 1024
+    seed: -1
   pipeline: qwen-image
+  provider: stable_diffusion_cpp
+
+# ---------------------------------------------------------------------------
+# Qwen-Image-Edit-2511 (stable-diffusion.cpp / sd-server, img2img)
+#
+# Image-to-image / instruction-guided edit model.  Same sd-server back-end
+# as Qwen-Image-2512; only the diffusion-model GGUF and the task type
+# differ.  Reachable via the api's ``POST /v1/images/edits`` which
+# forwards to ``POST /sdapi/v1/img2img`` on the sd-server.
+#
+# Tutorial: https://huggingface.co/unsloth/Qwen-Image-Edit-2511-GGUF
+# ---------------------------------------------------------------------------
+- id: qwen-image-edit-2511
+  name: "Qwen-Image-Edit-2511 Q4_K_M"
+  model: "qwen-image-edit-2511"
+  task: ImageToImage
+  modified_at: "2026-05-23T00:00:00+00:00"
+  digest: "0000000000000000000000000000000000000000000000000000000000000001"
+  details:
+    format: gguf
+    family: qwen-image
+    families:
+      - qwen-image
+    parameter_size: 20B
+    quantization_level: Q4_K_M
+    precision: int4
+    dtype: int4
+    specialization: ImageToImage
+    size: 12000000000
+    original_ctx: 0
+    diffusion_model_path: /models/qwen-image-edit/qwen-image-edit-2511-Q4_K_M.gguf
+    vae_path: /models/qwen-image-edit/qwen_image_vae.safetensors
+    text_encoder_path: /models/qwen-image-edit/Qwen2.5-VL-7B-Instruct-UD-Q4_K_XL.gguf
+    text_encoder_kind: llm
+  parameters:
+    # Img2img defaults — same diffusion / sampler tuning as Qwen-Image-2512
+    # plus a denoising_strength default for the edit task.  Strength 0.75
+    # is the prompt-guided-edit sweet spot; 0.0 reproduces the input,
+    # 1.0 ignores it entirely.
+    steps: 40
+    cfg_scale: 2.5
+    sampler_name: euler
+    width: 1024
+    height: 1024
+    denoising_strength: 0.75
+    seed: -1
+  pipeline: qwen-image-edit
   provider: stable_diffusion_cpp

@@ -146,3 +146,63 @@ def test_run_unknown_pipeline_returns_404():
     assert isinstance(detail, dict)
     assert detail["reason"] == "pipeline_not_found"
     assert "img23d" in detail["available_pipelines"]
+
+
+# ---------------------------------------------------------------------------
+# /v1/pipelines/img23d/files/{filename}
+# ---------------------------------------------------------------------------
+
+
+def test_download_img23d_artifact_serves_existing_file(tmp_path, monkeypatch):
+    """Files inside the configured output dir are served verbatim with the
+    right media type."""
+    monkeypatch.setattr(pipelines_router, "_IMG23D_OUTPUT_DIR", str(tmp_path))
+    target = tmp_path / "abc123.glb"
+    target.write_bytes(b"glb-bytes")
+
+    response = pipelines_router.download_img23d_artifact("abc123.glb")
+    assert response.media_type == "model/gltf-binary"
+    # FileResponse.path is the absolute path it'll serve from.
+    assert os.path.realpath(response.path) == os.path.realpath(str(target))
+
+
+def test_download_img23d_artifact_rejects_traversal(tmp_path, monkeypatch):
+    """Any filename with path separators or unexpected characters must 400."""
+    from fastapi import HTTPException
+
+    monkeypatch.setattr(pipelines_router, "_IMG23D_OUTPUT_DIR", str(tmp_path))
+
+    for bad in [
+        "../etc/passwd",
+        "../../secret.txt",
+        "abc/def.glb",
+        "abc.exe",
+        "abc.glb.txt",
+        "",
+    ]:
+        with pytest.raises(HTTPException) as exc:
+            pipelines_router.download_img23d_artifact(bad)
+        assert exc.value.status_code == 400, f"expected 400 for {bad!r}"
+
+
+def test_download_img23d_artifact_returns_404_for_missing(tmp_path, monkeypatch):
+    from fastapi import HTTPException
+
+    monkeypatch.setattr(pipelines_router, "_IMG23D_OUTPUT_DIR", str(tmp_path))
+
+    with pytest.raises(HTTPException) as exc:
+        pipelines_router.download_img23d_artifact("does-not-exist.glb")
+    assert exc.value.status_code == 404
+
+
+def test_download_img23d_artifact_supports_ply_and_png(tmp_path, monkeypatch):
+    monkeypatch.setattr(pipelines_router, "_IMG23D_OUTPUT_DIR", str(tmp_path))
+    (tmp_path / "a.ply").write_bytes(b"ply")
+    (tmp_path / "b.png").write_bytes(b"png")
+
+    assert pipelines_router.download_img23d_artifact("a.ply").media_type == "application/octet-stream"
+    assert pipelines_router.download_img23d_artifact("b.png").media_type == "image/png"
+
+
+# Need the os import for the test above.
+import os  # noqa: E402

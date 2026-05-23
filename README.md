@@ -296,6 +296,14 @@ The TRELLIS pipeline accepts:
 
 and returns paths to the persisted `.glb` mesh and `.ply` gaussian-splat files plus an optional preview frame.
 
+Downloads:
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/v1/pipelines/img23d/files/{filename}` | Stream a generated `.glb` / `.ply` / `.png` artefact. Filename must match `<id>.{glb,ply,png}` (alphanumeric id) — anything else is rejected with 400 as a path-traversal guard. Files live under `${TRELLIS_OUTPUT_DIR:-$SD_OUTPUT_DIR/3d}` on the runner. |
+
+The api layer's `GET /v1/images/3d/{filename}` proxies through to this endpoint so clients don't need pod access.
+
 > TRELLIS' CUDA extensions (`gsplat`, custom rasterizer) must be installed in the runner image for the pipeline to load. Without them the endpoint returns HTTP 503 with a structured message naming the missing dependency — the rest of the runner stays functional.
 
 ## Configuration

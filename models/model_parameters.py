@@ -254,4 +254,77 @@ class ModelParameters(BaseModel):
     ] = None
     """Host-memory prompt cache size in MiB. Active KV always lives in VRAM; this provides a RAM fallback for idle slots."""
 
+    # ------------------------------------------------------------------
+    # stable-diffusion.cpp / sd-server sampling defaults.
+    #
+    # These travel in the request body to ``/sdapi/v1/txt2img`` (or
+    # ``/sdapi/v1/img2img``) — they are NOT CLI flags on sd-server.
+    # The api reads them off ``model.parameters`` when the wire request
+    # omits the corresponding field, so YAML defines per-model defaults
+    # without forcing every caller to know them.
+    # ------------------------------------------------------------------
+    steps: Annotated[
+        Optional[int],
+        Field(
+            default=None,
+            description="Default diffusion sampling steps for SD models (sd-server `steps`). "
+            "Qwen-Image-2512 uses 40.",
+            ge=1,
+        ),
+    ] = None
+    """Default diffusion sampling steps for SD models."""
+
+    cfg_scale: Annotated[
+        Optional[float],
+        Field(
+            default=None,
+            description="Default classifier-free guidance scale (sd-server `cfg_scale`). "
+            "Qwen-Image-2512 uses 2.5; SDXL typically 7.0.",
+            ge=0.0,
+        ),
+    ] = None
+    """Default classifier-free guidance scale for SD models."""
+
+    sampler_name: Annotated[
+        Optional[str],
+        Field(
+            default=None,
+            description="Default sampler for SD models (sd-server `sampler_name`). "
+            "Qwen-Image-2512 uses `euler`.",
+        ),
+    ] = None
+    """Default sampler for SD models."""
+
+    width: Annotated[
+        Optional[int],
+        Field(
+            default=None,
+            description="Default output width (sd-server `width`).",
+            ge=64,
+        ),
+    ] = None
+    """Default output image width in pixels."""
+
+    height: Annotated[
+        Optional[int],
+        Field(
+            default=None,
+            description="Default output height (sd-server `height`).",
+            ge=64,
+        ),
+    ] = None
+    """Default output image height in pixels."""
+
+    denoising_strength: Annotated[
+        Optional[float],
+        Field(
+            default=None,
+            description="Default denoising strength for img2img (sd-server `denoising_strength`, 0.0–1.0). "
+            "Only meaningful for ``task: ImageToImage`` models.",
+            ge=0.0,
+            le=1.0,
+        ),
+    ] = None
+    """Default denoising strength for img2img (sd-server)."""
+
     model_config = ConfigDict(extra="ignore")
