@@ -18,7 +18,7 @@
     specialization: Text
     size: 35325163744
     original_ctx: 2048
-    # clip_model_path: /models/qwen3.6/27b/mmproj.gguf
+    clip_model_path: /models/qwen3.6/27b/mmproj.gguf
   parameters:
     num_ctx: 200000
     repeat_last_n: 128
