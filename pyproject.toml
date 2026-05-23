@@ -40,3 +40,9 @@ dev-dependencies = [
 # so picking them up causes collection errors.
 testpaths = ["tests"]
 norecursedirs = ["vendors", ".git", "__pycache__", "node_modules"]
+
+[tool.ruff]
+# Don't lint third-party source under vendors/.  Those are pinned native
+# dependencies (llama.cpp, stable-diffusion.cpp) — they have their own
+# style and we don't fix issues in them.
+extend-exclude = ["vendors"]

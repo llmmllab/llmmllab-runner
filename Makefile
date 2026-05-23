@@ -25,7 +25,7 @@ start: ## Start runner server (no reload)
 
 ## Code quality
 validate: ## Python syntax check
-	@for f in $$(find . -name '*.py' -not -path './__pycache__/*'); do $(UV) run $(PYTHON) -m py_compile "$$f" || exit 1; done
+	@for f in $$(find . -name '*.py' -not -path './__pycache__/*' -not -path './vendors/*' -not -path './.venv/*'); do $(UV) run $(PYTHON) -m py_compile "$$f" || exit 1; done
 	@echo "Syntax OK"
 
 clean: ## Remove __pycache__ and .pyc files

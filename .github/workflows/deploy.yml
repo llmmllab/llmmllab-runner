@@ -10,6 +10,14 @@ jobs:
     runs-on: self-hosted
     steps:
       - uses: actions/checkout@v4
+        with:
+          # vendors/llama.cpp and vendors/stable-diffusion.cpp are git
+          # submodules.  The Dockerfile does ``COPY vendors/llama.cpp
+          # /llama.cpp`` and ``COPY vendors/stable-diffusion.cpp
+          # /stable-diffusion.cpp`` — without recursive checkout those
+          # directories are empty and the COPY layers fail with "no source
+          # files were specified".
+          submodules: recursive
 
       - name: Build & Deploy
         run: |
