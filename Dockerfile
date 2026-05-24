@@ -111,7 +111,9 @@ RUN git clone --depth=1 --branch=${HUNYUAN3D_REF} \
 
 # Use pip directly (Hunyuan3D's setup is pip-flavoured; uv would re-resolve
 # every transitive dep and we'd lose the requirements.txt pin set).
-RUN python -m pip install --no-cache-dir --upgrade pip setuptools wheel
+# Skip ``pip install --upgrade pip`` — Ubuntu's debian-managed pip refuses
+# self-uninstall (no RECORD file) and the 24.0 system pip is new enough.
+RUN python -m pip install --no-cache-dir --upgrade setuptools wheel
 
 # torch must be installed BEFORE the custom-rasterizer setup.py runs —
 # its ``setup.py`` imports torch at build time to discover include paths.
