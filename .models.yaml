@@ -398,13 +398,21 @@
     llm_vision_path: /models/qwen-image-edit/2511/mmproj-bf16.gguf
   parameters:
     # Img2img defaults.  Diffusion / sampler tuning matches Qwen-Image-
-    # 2512 EXCEPT cfg_scale: the diffusers ``QwenImageEditPlusPipeline``
-    # ships with cfg=4.0 as its default and the sd.cpp 2511 demo's
-    # cfg=2.5 was tuned for a tiny text-overlay change; structural edits
-    # ("remove the background", "make it autumn") need more conditioning
-    # weight to actually engage the prompt.
+    # 2512 EXCEPT cfg_scale + img_cfg_scale: the diffusers
+    # ``QwenImageEditPlusPipeline`` ships with text guidance ~4.0 and
+    # image guidance ~1.5, and the asymmetry is critical — when
+    # img_cfg defaults to txt_cfg (sd-server's behaviour without
+    # ``--img-cfg-scale``) the model gets told to slavishly preserve
+    # the input, drowning out structural prompts.  sd.cpp's 2511 demo
+    # uses cfg=2.5 but that was tuned for a tiny text-overlay change;
+    # for structural edits ("remove the background", "make it autumn",
+    # "change the cup colour") we want stronger prompt adherence.
     steps: 40
     cfg_scale: 4.0
+    # CRITICAL: image guidance LOW, text guidance HIGH.  Without this
+    # asymmetry the QwenImageEditPlus path treats every edit prompt
+    # as "make minimal change to preserve the image".
+    img_cfg_scale: 1.0
     sampler_name: euler
     width: 1024
     height: 1024

@@ -118,6 +118,17 @@ class SDCppArgumentBuilder:
             max_vram = getattr(params, "max_vram_gib", None)
             if max_vram is not None:
                 args += ["--max-vram", str(max_vram)]
+            # ``--img-cfg-scale`` is the image-preservation pressure for
+            # sd-server's edit / instruct-pix2pix pipelines.  It's a
+            # CLI-only knob — the /sdapi/v1/img2img body has no field
+            # for it — so it has to be pinned at launch.  Default off
+            # means sd-server falls back to ``txt_cfg``, which on
+            # Qwen-Image-Edit over-preserves the input image and ignores
+            # structural prompts.  Set to 1.0–1.5 for prompt-dominant
+            # edits.
+            img_cfg = getattr(params, "img_cfg_scale", None)
+            if img_cfg is not None:
+                args += ["--img-cfg-scale", str(img_cfg)]
 
         # Tile the VAE decode so the compute buffer stays small regardless
         # of output resolution.  Without this, decoding a 1024×1024 image
