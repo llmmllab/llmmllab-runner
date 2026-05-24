@@ -254,3 +254,51 @@ def test_arg_builder_emits_flow_shift():
 
     assert "--flow-shift" in args
     assert args[args.index("--flow-shift") + 1] == "3.0"
+
+
+def test_arg_builder_emits_sd_optimization_flags():
+    """Every optional CLI optimization flag has a ModelParameters knob.
+    Verify each one maps to the expected sd-server flag when enabled."""
+    from models import ModelParameters
+
+    model = _make_sd_model()
+    model.parameters = ModelParameters(
+        diffusion_fa=True,
+        diffusion_conv_direct=True,
+        vae_conv_direct=True,
+        offload_to_cpu=True,
+        vae_on_cpu=True,
+        clip_on_cpu=True,
+        max_vram_gib=18.5,
+    )
+    args = SDCppArgumentBuilder(model).build_args()
+
+    assert "--diffusion-fa" in args
+    assert "--diffusion-conv-direct" in args
+    assert "--vae-conv-direct" in args
+    assert "--offload-to-cpu" in args
+    assert "--vae-on-cpu" in args
+    assert "--clip-on-cpu" in args
+    assert "--max-vram" in args
+    assert args[args.index("--max-vram") + 1] == "18.5"
+
+
+def test_arg_builder_omits_sd_optimization_flags_when_unset():
+    """All optimization flags default off — a fresh ModelParameters
+    must not add any of them to the argv."""
+    from models import ModelParameters
+
+    model = _make_sd_model()
+    model.parameters = ModelParameters()
+    args = SDCppArgumentBuilder(model).build_args()
+
+    for flag in (
+        "--diffusion-fa",
+        "--diffusion-conv-direct",
+        "--vae-conv-direct",
+        "--offload-to-cpu",
+        "--vae-on-cpu",
+        "--clip-on-cpu",
+        "--max-vram",
+    ):
+        assert flag not in args, f"{flag} unexpectedly present"

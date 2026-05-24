@@ -97,6 +97,28 @@ class SDCppArgumentBuilder:
         if flow_shift is not None:
             args += ["--flow-shift", str(flow_shift)]
 
+        # Performance / memory-tuning flags from the sd-server help.  All
+        # optional, default off.  Wired so a yaml entry can opt in without
+        # code changes; ``--diffusion-fa`` in particular is in the official
+        # sd.cpp Qwen-Image-Edit-2511 example and is the only one we set
+        # by default on the qwen-image-edit-2511 model entry.
+        if params:
+            if getattr(params, "diffusion_fa", None):
+                args += ["--diffusion-fa"]
+            if getattr(params, "diffusion_conv_direct", None):
+                args += ["--diffusion-conv-direct"]
+            if getattr(params, "vae_conv_direct", None):
+                args += ["--vae-conv-direct"]
+            if getattr(params, "offload_to_cpu", None):
+                args += ["--offload-to-cpu"]
+            if getattr(params, "vae_on_cpu", None):
+                args += ["--vae-on-cpu"]
+            if getattr(params, "clip_on_cpu", None):
+                args += ["--clip-on-cpu"]
+            max_vram = getattr(params, "max_vram_gib", None)
+            if max_vram is not None:
+                args += ["--max-vram", str(max_vram)]
+
         # Tile the VAE decode so the compute buffer stays small regardless
         # of output resolution.  Without this, decoding a 1024×1024 image
         # with Qwen-Image's WAN VAE allocates a ~7.5 GiB compute buffer on
