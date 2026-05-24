@@ -501,6 +501,50 @@ make docker-push
 
 Pushes to `192.168.0.71:31500` (override with `REGISTRY=` and `TAG=`).
 
+### Registry retention / cleanup
+
+CI pushes a `:${SHA}`-tagged image on every commit; the LAN registry fills up fast (the api repo alone had 240 stale tags = ~72 GiB at the first sweep).
+
+`scripts/registry_cleanup.py` keeps the N most recent tags per repo and deletes the rest via the Distribution v2 API. Auth is read from the existing `registry-secret` (dockerconfigjson) — no separate credential to maintain.
+
+```bash
+# Dry-run against the live registry (no deletes; shows the plan)
+REGISTRY_USER=... REGISTRY_PASSWORD=... \
+    python3 scripts/registry_cleanup.py -v
+
+# Or via the existing dockerconfigjson secret
+DOCKER_CONFIG_JSON="$(kubectl get secret -n llmmllab registry-secret \
+    -o jsonpath='{.data.\.dockerconfigjson}' | base64 -d)" \
+    python3 scripts/registry_cleanup.py -v
+
+# Apply
+python3 scripts/registry_cleanup.py --apply --keep=5
+```
+
+Schedule it nightly via the included CronJob — runs as a small `python:3.12-slim` pod with the script mounted from a ConfigMap and the registry credentials mounted from the `registry-secret`:
+
+```bash
+# Refresh the ConfigMap from the source script + apply the CronJob
+kubectl create configmap registry-cleanup-script \
+    -n llmmllab \
+    --from-file=registry_cleanup.py=scripts/registry_cleanup.py \
+    --dry-run=client -o yaml | kubectl apply -f -
+kubectl apply -f k8s/registry-cleanup-cronjob.yaml
+```
+
+**Reclaiming the disk** — `DELETE /v2/<repo>/manifests/<digest>` only dereferences the layers; the registry still holds the blobs until garbage-collect runs against the binary itself. Once the cron has trimmed manifests for a while, run GC on whatever node runs the registry container:
+
+```bash
+# Example for a `registry:2` docker container running on the host:
+docker exec <registry-container> \
+    registry garbage-collect /etc/docker/registry/config.yml -m
+
+# Or, if the registry binary is run directly:
+sudo registry garbage-collect /etc/docker/registry/config.yml -m
+```
+
+The `-m` flag drops the deleted-manifest stubs as well; without it you only reclaim layer space, not the per-tag metadata.
+
 ## Kubernetes Deployment
 
 ### Deploy

@@ -1,0 +1,96 @@
+# Trim the private docker registry to the N most recent tags per repository.
+#
+# Runs nightly at 03:00 local time.  Mounts the existing ``registry-secret``
+# (a ``kubernetes.io/dockerconfigjson`` secret) so we don't have to keep a
+# separate plaintext copy of the registry credentials.
+#
+# The cleanup script is fetched from the llmmllab-runner repo via a
+# ConfigMap baked alongside this manifest; updating it is `kubectl apply
+# -f registry-cleanup-cronjob.yaml` after editing scripts/registry_cleanup.py.
+# (Or build it into the runner image — but keeping it as a ConfigMap means
+# operations doesn't gate on a runner rebuild.)
+#
+# Disk space is not reclaimed until you run `registry garbage-collect` on
+# the registry binary itself.  See scripts/README.md for the runbook.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: registry-cleanup-script
+  namespace: llmmllab
+data:
+  # Populate this via:
+  #   kubectl create configmap registry-cleanup-script \
+  #     -n llmmllab \
+  #     --from-file=registry_cleanup.py=scripts/registry_cleanup.py \
+  #     --dry-run=client -o yaml | kubectl apply -f -
+  registry_cleanup.py: |
+    # Replaced at deploy time — kubectl create configmap ... --from-file
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: registry-cleanup
+  namespace: llmmllab
+  labels:
+    app: registry-cleanup
+spec:
+  # 03:00 UTC every night — quiet hours on the cluster, no overlap with
+  # the runner's deploy.yml workflows.
+  schedule: "0 3 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 5
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      activeDeadlineSeconds: 1800   # 30 min hard cap
+      template:
+        metadata:
+          labels:
+            app: registry-cleanup
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: cleanup
+              image: python:3.12-slim
+              imagePullPolicy: IfNotPresent
+              command: ["python", "/scripts/registry_cleanup.py"]
+              args:
+                - "--apply"
+                - "--keep=5"
+                - "--protect=latest"
+                - "--protect=latest-*"
+                - "-v"
+              env:
+                - name: REGISTRY_URL
+                  value: "http://192.168.0.71:31500"
+                - name: DOCKER_CONFIG_JSON_FILE
+                  value: /var/secrets/registry/.dockerconfigjson
+              volumeMounts:
+                - name: script
+                  mountPath: /scripts
+                  readOnly: true
+                - name: registry-credentials
+                  mountPath: /var/secrets/registry
+                  readOnly: true
+              resources:
+                limits:
+                  cpu: "500m"
+                  memory: "256Mi"
+                requests:
+                  cpu: "100m"
+                  memory: "64Mi"
+          volumes:
+            - name: script
+              configMap:
+                name: registry-cleanup-script
+                items:
+                  - key: registry_cleanup.py
+                    path: registry_cleanup.py
+                    mode: 0o755
+            - name: registry-credentials
+              secret:
+                secretName: registry-secret
+                items:
+                  - key: .dockerconfigjson
+                    path: .dockerconfigjson
