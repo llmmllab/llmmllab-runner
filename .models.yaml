@@ -399,9 +399,23 @@
     # but a sensible default keeps callers that DO want a strength knob.
     denoising_strength: 0.75
     seed: -1
-    # Pin to the OTHER 3090 so txt2img and img2img can be loaded
-    # simultaneously without racing for VRAM on the same card.
-    main_gpu: 1
+    # Split across the two 3090s.  Loading everything on one card was
+    # OOM-ing — resident set is ~22 GiB (13 GiB diffusion + 9 GiB
+    # Qwen2.5-VL text encoder + vision tower + 0.2 GiB VAE), and the
+    # vision-encode + diffusion-compute buffers need another few GiB
+    # on top of that during a Qwen-Image-Edit run.
+    #
+    # Layout:
+    #   te=cuda1        Qwen2.5-VL text encoder + visual tower (~9 GiB)
+    #   diffusion=cuda2 main DiT (~13 GiB)
+    #   vae=cuda2       VAE (~0.2 GiB) — collocated with diffusion to
+    #                   avoid the VAE-decode round-trip across cards.
+    #
+    # ``main_gpu`` is intentionally omitted; SDCppServerManager skips
+    # the CUDA_VISIBLE_DEVICES pin when ``sd_backend`` is set so all
+    # three CUDA devices stay visible (the layout above references
+    # cuda1 + cuda2 by index — pinning would break it).
+    sd_backend: "te=cuda1,diffusion=cuda2,vae=cuda2"
     # Qwen-Image-recommended Flow shift (Unsloth tutorial).
     flow_shift: 3.0
     # REQUIRED for Qwen-Image-Edit-2511 — without it the editing
