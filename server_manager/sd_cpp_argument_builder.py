@@ -73,7 +73,7 @@ class SDCppArgumentBuilder:
         args += ["--listen-ip", "127.0.0.1"]
 
         if details.clip_model_path:
-            args += ["--clip-vision", details.clip_model_path]
+            args += ["--clip_vision", details.clip_model_path]
 
         # Tile the VAE decode so the compute buffer stays small regardless
         # of output resolution.  Without this, decoding a 1024×1024 image
