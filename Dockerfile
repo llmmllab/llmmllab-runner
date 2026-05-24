@@ -208,12 +208,16 @@ WORKDIR /app
 # 3 GB of CUDA wheels through ``uv pip install``.
 RUN uv venv --python 3.12 --system-site-packages ${SHARED_VENV}
 
-# Copy only the dep manifests first
-COPY pyproject.toml ./
+# Copy only the dep manifests first.  uv.lock is committed so
+# ``uv sync --frozen`` is reproducible across builds; failure here is
+# a real error (not "fall back to system pip") because the runner
+# depends on real fastapi/uvicorn/structlog/etc resolved from this
+# lockfile, not whatever Hunyuan3D's requirements.txt happened to pin.
+COPY pyproject.toml uv.lock ./
 
-# Install dependencies
+# Install dependencies (production set; dev group skipped via --no-dev).
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-dev || true
+    uv sync --frozen --no-dev
 
 # Copy application source. We strip vendors/ from the runtime image — the
 # native binaries live under /llama.cpp and /stable-diffusion.cpp (copied
