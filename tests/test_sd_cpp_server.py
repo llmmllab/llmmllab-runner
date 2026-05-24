@@ -193,3 +193,64 @@ def test_sd_server_manager_inherits_env_when_parameters_missing():
     mgr = SDCppServerManager(model=model, port=9999)
 
     assert mgr._build_subprocess_env() is None
+
+
+# ---------------------------------------------------------------------------
+# Qwen-Image-Edit-specific flags
+# ---------------------------------------------------------------------------
+
+
+def test_arg_builder_emits_llm_vision_when_set():
+    """The Qwen-Image-Edit 2509+ instruction-following path requires the
+    Qwen2.5-VL visual tower; ``llm_vision_path`` must propagate to the
+    sd-server ``--llm_vision`` flag."""
+    model = _make_sd_model(
+        llm_vision_path="/models/qwen2.5-vl/qwen_2.5_vl_7b_fp8_scaled.safetensors",
+    )
+    args = SDCppArgumentBuilder(model).build_args()
+
+    assert "--llm_vision" in args
+    assert args[args.index("--llm_vision") + 1].endswith(
+        "qwen_2.5_vl_7b_fp8_scaled.safetensors"
+    )
+
+
+def test_arg_builder_omits_llm_vision_when_unset():
+    """No llm_vision_path → no flag.  Plain txt2img models don't need it."""
+    model = _make_sd_model()  # no llm_vision_path
+    args = SDCppArgumentBuilder(model).build_args()
+    assert "--llm_vision" not in args
+
+
+def test_arg_builder_emits_qwen_image_zero_cond_t():
+    """Required for Qwen-Image-Edit-2511; without it editing quality
+    degrades significantly per leejet/stable-diffusion.cpp docs."""
+    from models import ModelParameters
+
+    model = _make_sd_model()
+    model.parameters = ModelParameters(qwen_image_zero_cond_t=True)
+    args = SDCppArgumentBuilder(model).build_args()
+
+    assert "--qwen-image-zero-cond-t" in args
+
+
+def test_arg_builder_omits_zero_cond_when_false_or_unset():
+    """Boolean flag — omit unless explicitly true."""
+    from models import ModelParameters
+
+    for params in (None, ModelParameters(), ModelParameters(qwen_image_zero_cond_t=False)):
+        model = _make_sd_model()
+        model.parameters = params
+        args = SDCppArgumentBuilder(model).build_args()
+        assert "--qwen-image-zero-cond-t" not in args, f"unexpected zero_cond_t with params={params!r}"
+
+
+def test_arg_builder_emits_flow_shift():
+    from models import ModelParameters
+
+    model = _make_sd_model()
+    model.parameters = ModelParameters(flow_shift=3.0)
+    args = SDCppArgumentBuilder(model).build_args()
+
+    assert "--flow-shift" in args
+    assert args[args.index("--flow-shift") + 1] == "3.0"

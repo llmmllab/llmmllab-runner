@@ -72,8 +72,30 @@ class SDCppArgumentBuilder:
             args += ["--listen-port", str(self.port)]
         args += ["--listen-ip", "127.0.0.1"]
 
-        if details.clip_model_path:
-            args += ["--clip_vision", details.clip_model_path]
+        # Qwen-Image-Edit 2509+ needs the Qwen2.5-VL visual tower or the
+        # editing pipeline falls back to plain Qwen-Image txt2img on the
+        # input latent — i.e. it produces an entirely different scene
+        # with a similar palette/composition because the prompt is
+        # interpreted without "seeing" the image.  ``--llm_vision``
+        # loads the visual encoder; sd-server's QwenImageEditPlusPipeline
+        # only fires when both this is present AND ref_images is non-empty
+        # in the request body (the api's img2img path supplies that).
+        if details.llm_vision_path:
+            args += ["--llm_vision", details.llm_vision_path]
+
+        # Qwen-Image's zero_cond_t conditioning — leejet/stable-diffusion.cpp
+        # docs say this is REQUIRED for Qwen-Image-Edit-2511; without it
+        # "image editing quality degrades significantly" (manifests as
+        # "remove the background" producing an entirely different subject).
+        # Boolean flag — pass it bare when enabled.
+        if params and getattr(params, "qwen_image_zero_cond_t", None):
+            args += ["--qwen-image-zero-cond-t"]
+
+        # Flow-matching schedulers (Qwen-Image / SD3.x / WAN) take a shift
+        # hyperparameter.  Qwen-Image tutorials recommend 3.
+        flow_shift = getattr(params, "flow_shift", None) if params else None
+        if flow_shift is not None:
+            args += ["--flow-shift", str(flow_shift)]
 
         # Tile the VAE decode so the compute buffer stays small regardless
         # of output resolution.  Without this, decoding a 1024×1024 image

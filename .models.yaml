@@ -369,25 +369,44 @@
     specialization: ImageToImage
     size: 12000000000
     original_ctx: 0
-    clip_model_path: "/models/qwen-image-edit/2511/mmproj-bf16.gguf"
     diffusion_model_path: /models/qwen-image-edit/2511/q4_k_m.gguf
     vae_path: /models/qwen-image/vae.safetensors
-    text_encoder_path: /models/qwen2.5/7b/q4_k_xl.gguf
+    # Qwen-Image-Edit uses Qwen2.5-VL as its text encoder AND vision
+    # tower — both come from the SAME safetensors file (Comfy-Org's
+    # qwen_2.5_vl_7b_fp8_scaled, ~9 GiB).  sd-server's --llm prefix
+    # pulls the text encoder tensors out and --llm_vision pulls the
+    # visual tower; tensors are deduplicated internally.
+    #
+    # NOTE: the older llama.cpp-format mmproj-bf16.gguf does NOT work
+    # here — its tensor names follow llama.cpp's convention, not the
+    # ``text_encoders.llm.visual.*`` prefix sd-server expects.
+    text_encoder_path: /models/qwen2.5-vl/split_files/text_encoders/qwen_2.5_vl_7b_fp8_scaled.safetensors
     text_encoder_kind: llm
+    llm_vision_path: /models/qwen2.5-vl/split_files/text_encoders/qwen_2.5_vl_7b_fp8_scaled.safetensors
   parameters:
     # Img2img defaults — same diffusion / sampler tuning as Qwen-Image-2512
-    # plus a denoising_strength default for the edit task.  Strength 0.75
-    # is the prompt-guided-edit sweet spot; 0.0 reproduces the input,
-    # 1.0 ignores it entirely.
+    # plus a denoising_strength default for the edit task.
     steps: 40
     cfg_scale: 2.5
     sampler_name: euler
     width: 1024
     height: 1024
+    # Strength 0.75 is the prompt-guided-edit sweet spot; 0.0 reproduces
+    # the input, 1.0 ignores it entirely.  For pure instruction-following
+    # edits ("remove the background", "make it autumn") with QwenImageEdit
+    # the denoising_strength is largely a no-op anyway since the pipeline
+    # uses the ref-image conditioning path rather than img2img noising —
+    # but a sensible default keeps callers that DO want a strength knob.
     denoising_strength: 0.75
     seed: -1
     # Pin to the OTHER 3090 so txt2img and img2img can be loaded
     # simultaneously without racing for VRAM on the same card.
     main_gpu: 1
+    # Qwen-Image-recommended Flow shift (Unsloth tutorial).
+    flow_shift: 3.0
+    # REQUIRED for Qwen-Image-Edit-2511 — without it the editing
+    # pipeline degrades to "kinda-similar-image-with-wrong-subject".
+    # leejet/stable-diffusion.cpp docs explicitly call this out.
+    qwen_image_zero_cond_t: true
   pipeline: qwen-image-edit
   provider: stable_diffusion_cpp
