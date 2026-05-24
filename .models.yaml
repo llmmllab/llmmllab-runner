@@ -397,10 +397,14 @@
     text_encoder_kind: llm
     llm_vision_path: /models/qwen-image-edit/2511/mmproj-bf16.gguf
   parameters:
-    # Img2img defaults — same diffusion / sampler tuning as Qwen-Image-2512
-    # plus a denoising_strength default for the edit task.
+    # Img2img defaults.  Diffusion / sampler tuning matches Qwen-Image-
+    # 2512 EXCEPT cfg_scale: the diffusers ``QwenImageEditPlusPipeline``
+    # ships with cfg=4.0 as its default and the sd.cpp 2511 demo's
+    # cfg=2.5 was tuned for a tiny text-overlay change; structural edits
+    # ("remove the background", "make it autumn") need more conditioning
+    # weight to actually engage the prompt.
     steps: 40
-    cfg_scale: 2.5
+    cfg_scale: 4.0
     sampler_name: euler
     width: 1024
     height: 1024
