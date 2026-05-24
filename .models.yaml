@@ -369,6 +369,7 @@
     specialization: ImageToImage
     size: 12000000000
     original_ctx: 0
+    clip_model_path: "/models/qwen-image-edit/2511/mmproj-bf16.gguf"
     diffusion_model_path: /models/qwen-image-edit/2511/q4_k_m.gguf
     vae_path: /models/qwen-image/vae.safetensors
     text_encoder_path: /models/qwen2.5/7b/q4_k_xl.gguf
