@@ -90,7 +90,7 @@ RUN cmake -B build \
 FROM nvidia/cuda:12.8.1-cudnn-devel-ubuntu24.04 AS hunyuan-builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3 python3-dev python3-venv \
+    python3 python3-dev python3-venv python3-pip \
     git wget curl \
     build-essential cmake g++ ninja-build \
     libgl1 libglib2.0-0 \
@@ -99,7 +99,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 ENV CUDA_HOME=/usr/local/cuda \
     LD_LIBRARY_PATH=${LD_LIBRARY_PATH}:/usr/local/cuda/lib64/stubs \
-    TORCH_CUDA_ARCH_LIST="7.5;8.6"
+    TORCH_CUDA_ARCH_LIST="7.5;8.6" \
+    PIP_BREAK_SYSTEM_PACKAGES=1
 
 RUN ln -sf /usr/local/cuda/lib64/stubs/libcuda.so /usr/local/cuda/lib64/stubs/libcuda.so.1
 
