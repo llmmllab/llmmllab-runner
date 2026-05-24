@@ -92,6 +92,15 @@ def test_arg_builder_emits_clip_g_when_set():
     assert args[args.index("--clip_g") + 1] == "/models/clip_g.safetensors"
 
 
+def test_arg_builder_always_enables_vae_tiling():
+    """The Qwen-Image WAN VAE blows past 24 GiB on a 1024 decode without
+    ``--vae-tiling``.  We always pass it; the quality hit is negligible
+    and the alternative is a hard OOM mid-generation."""
+    model = _make_sd_model()
+    args = SDCppArgumentBuilder(model).build_args()
+    assert "--vae-tiling" in args
+
+
 def test_sd_server_manager_health_maps_to_capabilities():
     """``/health`` rewrites to the only endpoint that proves the model is loaded."""
     model = _make_sd_model()

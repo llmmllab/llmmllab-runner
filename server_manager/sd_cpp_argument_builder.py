@@ -59,6 +59,15 @@ class SDCppArgumentBuilder:
             args += ["--listen-port", str(self.port)]
         args += ["--listen-ip", "127.0.0.1"]
 
+        # Tile the VAE decode so the compute buffer stays small regardless
+        # of output resolution.  Without this, decoding a 1024×1024 image
+        # with Qwen-Image's WAN VAE allocates a ~7.5 GiB compute buffer on
+        # top of the ~18.8 GiB of resident weights — overflows a 24 GiB
+        # 3090 and the sampler returns no images with `decode_first_stage
+        # failed for latent 1`.  Tile size defaults to 32×32 which is fine
+        # for the resolutions we ship.  Negligible quality impact.
+        args += ["--vae-tiling"]
+
         # Verbose by default — sd-server is quiet otherwise and we want logs
         # to flow through our drain threads.
         args += ["-v"]
