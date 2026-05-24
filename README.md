@@ -399,6 +399,34 @@ Image models use the same YAML file but populate a different set of fields:
 
 The runner picks `SDCppServerManager` when it sees `provider: stable_diffusion_cpp` and translates the `details.*` paths to the matching `sd-server` flags (`--diffusion-model`, `--vae`, `--llm`/`--clip_l`/`--t5xxl`, `--clip_g`). For SDXL-style all-in-one GGUFs, set `details.gguf_file` and leave the split-file fields unset.
 
+#### Multi-GPU layouts for SD
+
+stable-diffusion.cpp does **not** support llama.cpp-style tensor splitting (slicing one layer's weights across devices), but it does let you place each component (text encoder, diffusion, VAE) on a different backend. Two `parameters` fields expose this:
+
+| Field | sd-server flag | Purpose |
+|-------|----------------|---------|
+| `sd_backend` | `--backend` | Per-component **compute** placement |
+| `sd_params_backend` | `--params-backend` | Per-component **weight storage** placement |
+
+Examples:
+
+```yaml
+# Spread Qwen-Image across two 3090s: text encoder on cuda0, diffusion+VAE on cuda1.
+# Removes the need for --vae-tiling at 1024×1024 and frees a card for the OTHER model.
+parameters:
+  sd_backend: "clip=cuda0,diffusion=cuda1,vae=cuda1"
+```
+
+```yaml
+# Trade ~30% throughput for VRAM headroom: weights live in RAM, compute on GPU.
+parameters:
+  sd_params_backend: "diffusion=cpu"
+```
+
+When `sd_backend` is set, the runner intentionally does **not** narrow `CUDA_VISIBLE_DEVICES` (otherwise the `cuda1`/`cuda2` names in your layout string wouldn't resolve). `main_gpu` is ignored in that case.
+
+The simpler single-GPU pin (`main_gpu: 2`) is still the right choice when one card has enough VRAM — we use it by default for Qwen-Image-2512 (pinned to a 24 GB 3090).
+
 ## Metrics
 
 The runner exposes Prometheus metrics at `/metrics`. Cardinality is intentionally bounded — no `session_id` labels.

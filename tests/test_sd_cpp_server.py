@@ -101,6 +101,40 @@ def test_arg_builder_always_enables_vae_tiling():
     assert "--vae-tiling" in args
 
 
+def test_arg_builder_passes_multi_gpu_backend():
+    """``sd_backend`` and ``sd_params_backend`` propagate to the sd-server
+    CLI so a yaml entry can lay components across multiple GPUs."""
+    from models import ModelParameters
+
+    model = _make_sd_model()
+    model.parameters = ModelParameters(
+        sd_backend="clip=cuda0,diffusion=cuda1,vae=cuda1",
+        sd_params_backend="diffusion=cpu",
+    )
+    args = SDCppArgumentBuilder(model).build_args()
+
+    assert "--backend" in args
+    assert args[args.index("--backend") + 1] == "clip=cuda0,diffusion=cuda1,vae=cuda1"
+    assert "--params-backend" in args
+    assert args[args.index("--params-backend") + 1] == "diffusion=cpu"
+
+
+def test_sd_server_manager_skips_single_gpu_pin_when_multi_gpu_layout_set():
+    """When ``sd_backend`` references multiple devices, pinning
+    CUDA_VISIBLE_DEVICES to a single one would break the layout — the
+    env hook must inherit instead."""
+    from models import ModelParameters
+
+    model = _make_sd_model()
+    model.parameters = ModelParameters(
+        main_gpu=1,
+        sd_backend="clip=cuda0,diffusion=cuda1",
+    )
+    mgr = SDCppServerManager(model=model, port=9999)
+    # Even though main_gpu=1, multi-GPU layout takes precedence.
+    assert mgr._build_subprocess_env() is None
+
+
 def test_sd_server_manager_health_maps_to_capabilities():
     """``/health`` rewrites to the only endpoint that proves the model is loaded."""
     model = _make_sd_model()

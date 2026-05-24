@@ -55,6 +55,19 @@ class SDCppArgumentBuilder:
         if details.clip_g_path:
             args += ["--clip_g", details.clip_g_path]
 
+        # Multi-GPU layout — per-component placement.  sd.cpp does not
+        # support llama.cpp-style tensor splitting, but it does let us
+        # place clip / diffusion / vae on different backends.
+        params = self.model.parameters
+        sd_backend = getattr(params, "sd_backend", None) if params else None
+        sd_params_backend = (
+            getattr(params, "sd_params_backend", None) if params else None
+        )
+        if sd_backend:
+            args += ["--backend", sd_backend]
+        if sd_params_backend:
+            args += ["--params-backend", sd_params_backend]
+
         if self.port:
             args += ["--listen-port", str(self.port)]
         args += ["--listen-ip", "127.0.0.1"]

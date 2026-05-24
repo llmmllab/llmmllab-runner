@@ -104,9 +104,27 @@ class SDCppServerManager(BaseServerManager):
         we override ``CUDA_VISIBLE_DEVICES`` on the child process so
         sd-server only sees the chosen GPU.  ``-1`` (the default) means
         "inherit", which leaves the historical behaviour unchanged.
+
+        Exception: when ``sd_backend`` is set, we deliberately do NOT
+        narrow ``CUDA_VISIBLE_DEVICES``.  ``--backend`` names devices
+        by their pre-CUDA_VISIBLE_DEVICES indices (``cuda0``, ``cuda1``,
+        ``cuda2``) and pinning would make those names unresolvable.
         """
         params = self.model.parameters
-        main_gpu = getattr(params, "main_gpu", None) if params else None
+        if params is None:
+            return None
+
+        # Multi-GPU layout requested → let sd-server see every device.
+        sd_backend = getattr(params, "sd_backend", None)
+        if sd_backend:
+            self._logger.info(
+                f"sd-server multi-GPU layout active (backend={sd_backend}); "
+                "leaving CUDA_VISIBLE_DEVICES inherited so every cuda* "
+                "device referenced by --backend resolves."
+            )
+            return None
+
+        main_gpu = getattr(params, "main_gpu", None)
         if main_gpu is None or main_gpu < 0:
             return None
         env = os.environ.copy()
