@@ -158,7 +158,10 @@ ENV PYTHONUNBUFFERED=1 \
     RUNNER_HOST=0.0.0.0 \
     LLAMA_SERVER_EXECUTABLE=/llama.cpp/build/bin/llama-server \
     SD_SERVER_EXECUTABLE=/stable-diffusion.cpp/build/bin/sd-server \
-    HUNYUAN3D_MODEL_PATH=/models/hunyuan3d \
+    HY3DGEN_MODELS=/models \
+    HUNYUAN3D_MODEL_PATH=hunyuan3d \
+    HUNYUAN3D_SUBFOLDER=hunyuan3d-dit-v2-1 \
+    HUNYUAN3D_USE_SAFETENSORS=false \
     SD_OUTPUT_DIR=/tmp/sd-out
 
 # Runtime-only apt deps (no compilers).

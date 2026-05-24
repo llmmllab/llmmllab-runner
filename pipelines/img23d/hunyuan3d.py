@@ -37,13 +37,33 @@ from models import ModelTask
 from pipelines.base import InProcessPipeline
 
 
-# Where to load weights from.  Defaults to the HF repo identifier so
-# the pipeline ``from_pretrained``s correctly when no env override is
-# set.  On the cluster we point at a local mount (``/models/hunyuan3d``)
-# so we don't redownload 14 GB on every pod start.
+# Where to load weights from.  Two-knob layout matches what hy3dgen's
+# ``smart_load_model`` expects:
+#
+#   final path = $HY3DGEN_MODELS / <model_path> / <subfolder>
+#
+# On the cluster the runner pod mounts the cluster's pre-downloaded
+# weights at ``/models/hunyuan3d/`` (containing ``hunyuan3d-dit-v2-1/``
+# directly), so we set ``HY3DGEN_MODELS=/models`` and pass
+# ``model_path='hunyuan3d'`` — final path resolves to
+# ``/models/hunyuan3d/hunyuan3d-dit-v2-1/`` which is where the ``.ckpt``
+# + ``config.yaml`` live.
+#
+# In dev (no pre-downloaded weights), set HY3DGEN_MODELS to
+# ``~/.cache/hy3dgen`` (hy3dgen's default) and the canonical HF repo id
+# ``tencent/Hunyuan3D-2.1`` — hy3dgen will snapshot_download into that
+# layout on first load.
 _DEFAULT_MODEL_PATH = os.environ.get(
     "HUNYUAN3D_MODEL_PATH", "tencent/Hunyuan3D-2.1"
 )
+_DEFAULT_SUBFOLDER = os.environ.get(
+    "HUNYUAN3D_SUBFOLDER", "hunyuan3d-dit-v2-1"
+)
+# When the weights are stored as ``.ckpt`` (the format on this cluster's
+# PVC) rather than ``.safetensors`` (HF default), flip this off.
+_USE_SAFETENSORS = os.environ.get(
+    "HUNYUAN3D_USE_SAFETENSORS", "false"
+).lower() in ("1", "true", "yes", "on")
 # Where to persist generated .glb meshes for HTTP retrieval.  Same root
 # directory the SD pipelines write into; the api's
 # ``/v1/pipelines/img23d/files/{filename}`` proxy serves from here.
@@ -67,9 +87,14 @@ class Hunyuan3DPipeline(InProcessPipeline):
     name = "img23d"
     task = ModelTask.IMAGETO3D
 
-    def __init__(self, model_path: Optional[str] = None) -> None:
+    def __init__(
+        self,
+        model_path: Optional[str] = None,
+        subfolder: Optional[str] = None,
+    ) -> None:
         super().__init__()
         self._model_path = model_path or _DEFAULT_MODEL_PATH
+        self._subfolder = subfolder or _DEFAULT_SUBFOLDER
         # Concrete pipeline instance — set in :meth:`_load`.
         self._impl: Any = None
 
@@ -93,11 +118,14 @@ class Hunyuan3DPipeline(InProcessPipeline):
         os.makedirs(_OUTPUT_DIR, exist_ok=True)
 
         self._logger.info(
-            f"Loading Hunyuan3D-2.1 from {self._model_path} "
-            "(first run on a fresh cache will download ~14 GiB)"
+            f"Loading Hunyuan3D-2.1 from "
+            f"$HY3DGEN_MODELS/{self._model_path}/{self._subfolder} "
+            f"(use_safetensors={_USE_SAFETENSORS})"
         )
         self._impl = Hunyuan3DDiTFlowMatchingPipeline.from_pretrained(
-            self._model_path
+            self._model_path,
+            subfolder=self._subfolder,
+            use_safetensors=_USE_SAFETENSORS,
         )
 
         # Move to CUDA when available.  Hunyuan3D's pipeline exposes
