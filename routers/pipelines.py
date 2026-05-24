@@ -37,7 +37,7 @@ from fastapi.responses import FileResponse
 
 from config import SD_OUTPUT_DIR
 from pipelines.base import InProcessPipeline
-from pipelines.img23d.trellis import TrellisPipeline
+from pipelines.img23d.hunyuan3d import Hunyuan3DPipeline
 from utils.logging import llmmllogger
 
 logger = llmmllogger.bind(component="pipelines_router")
@@ -48,7 +48,7 @@ router = APIRouter(prefix="/v1/pipelines", tags=["pipelines"])
 # the FastAPI app surface is fully described by code review — no
 # late-bound registration paths to chase.
 _REGISTRY: Dict[str, InProcessPipeline] = {
-    TrellisPipeline.name: TrellisPipeline(),
+    Hunyuan3DPipeline.name: Hunyuan3DPipeline(),
 }
 
 

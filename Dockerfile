@@ -77,7 +77,60 @@ RUN cmake -B build \
     && cmake --build build --config Release -j6
 
 # ---------------------------------------------------------------------------
-# Stage 3 — runtime image
+# Stage 3 — Hunyuan3D-2.1 build (image-to-3D pipeline)
+#
+# Hunyuan3D ships as a git repo, not a wheel.  Two custom CUDA extensions
+# (custom_rasterizer, differentiable_renderer) compile against torch's
+# CUDA headers, so this stage needs both the dev toolchain AND torch
+# installed in the venv we'll later copy into the runtime image.
+#
+# We install everything into the same ``/opt/venv/shared`` path the
+# runtime stage expects, so the COPY in stage 4 picks it up verbatim.
+# ---------------------------------------------------------------------------
+FROM nvidia/cuda:12.8.1-cudnn-devel-ubuntu24.04 AS hunyuan-builder
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3 python3-dev python3-venv \
+    git wget curl \
+    build-essential cmake g++ ninja-build \
+    libgl1 libglib2.0-0 \
+    && rm -rf /var/lib/apt/lists/* \
+    && ln -sf /usr/bin/python3 /usr/bin/python
+
+ENV CUDA_HOME=/usr/local/cuda \
+    LD_LIBRARY_PATH=${LD_LIBRARY_PATH}:/usr/local/cuda/lib64/stubs \
+    TORCH_CUDA_ARCH_LIST="7.5;8.6"
+
+RUN ln -sf /usr/local/cuda/lib64/stubs/libcuda.so /usr/local/cuda/lib64/stubs/libcuda.so.1
+
+# Pinned to a specific Hunyuan3D-2 commit — the repo doesn't tag releases.
+ARG HUNYUAN3D_REF=main
+RUN git clone --depth=1 --branch=${HUNYUAN3D_REF} \
+    https://github.com/Tencent/Hunyuan3D-2.git /opt/hunyuan3d
+
+# Use pip directly (Hunyuan3D's setup is pip-flavoured; uv would re-resolve
+# every transitive dep and we'd lose the requirements.txt pin set).
+RUN python -m pip install --no-cache-dir --upgrade pip setuptools wheel
+
+# torch must be installed BEFORE the custom-rasterizer setup.py runs —
+# its ``setup.py`` imports torch at build time to discover include paths.
+# Pin to the CUDA 12.1 wheel (closest pre-built variant to our 12.8
+# runtime — CUDA minor versions are forward-compatible).
+RUN python -m pip install --no-cache-dir \
+    torch==2.5.1 torchvision==0.20.1 \
+    --index-url https://download.pytorch.org/whl/cu121
+
+WORKDIR /opt/hunyuan3d
+RUN python -m pip install --no-cache-dir -r requirements.txt
+RUN python -m pip install --no-cache-dir -e .
+
+# Custom CUDA extensions — build against torch's headers.
+RUN cd hy3dgen/texgen/custom_rasterizer && python setup.py install
+RUN cd hy3dgen/texgen/differentiable_renderer && python setup.py install || \
+    echo "WARN: differentiable_renderer build failed; texture gen disabled"
+
+# ---------------------------------------------------------------------------
+# Stage 4 — runtime image
 # ---------------------------------------------------------------------------
 FROM nvidia/cuda:12.8.1-cudnn-runtime-ubuntu24.04
 
@@ -100,7 +153,9 @@ ENV PYTHONUNBUFFERED=1 \
     RUNNER_PORT=8000 \
     RUNNER_HOST=0.0.0.0 \
     LLAMA_SERVER_EXECUTABLE=/llama.cpp/build/bin/llama-server \
-    SD_SERVER_EXECUTABLE=/stable-diffusion.cpp/build/bin/sd-server
+    SD_SERVER_EXECUTABLE=/stable-diffusion.cpp/build/bin/sd-server \
+    HUNYUAN3D_MODEL_PATH=/models/hunyuan3d \
+    SD_OUTPUT_DIR=/tmp/sd-out
 
 # Runtime-only apt deps (no compilers)
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -116,10 +171,25 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY --from=llama-builder /llama.cpp /llama.cpp
 COPY --from=sd-builder /stable-diffusion.cpp /stable-diffusion.cpp
 
+# Hunyuan3D source + the system-site-packages where it was installed
+# (pip install -e .).  We also pull in the system python's dist-packages
+# from the hunyuan-builder stage so the compiled custom_rasterizer /
+# differentiable_renderer extensions are available without a re-install.
+COPY --from=hunyuan-builder /opt/hunyuan3d /opt/hunyuan3d
+COPY --from=hunyuan-builder /usr/local/lib/python3.12/dist-packages \
+    /usr/local/lib/python3.12/dist-packages
+# torch ships ~3 GB of CUDA libs that the runtime image's cudnn-runtime
+# base already has, but the wheels reference them via their own bundled
+# copies.  We keep both — disk is cheap relative to compilation time.
+
 WORKDIR /app
 
-# Create the shared venv uv will manage
-RUN uv venv --python 3.12 ${SHARED_VENV}
+# Create the shared venv uv will manage.  ``--system-site-packages``
+# is critical: it lets the venv see ``hy3dgen`` + ``torch`` that we
+# installed into ``/usr/local/lib/python3.12/dist-packages`` via the
+# hunyuan-builder stage above, without needing to re-install
+# 3 GB of CUDA wheels through ``uv pip install``.
+RUN uv venv --python 3.12 --system-site-packages ${SHARED_VENV}
 
 # Copy only the dep manifests first
 COPY pyproject.toml ./

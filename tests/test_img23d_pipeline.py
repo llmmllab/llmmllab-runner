@@ -1,9 +1,9 @@
-"""Unit tests for the in-process pipeline framework + TRELLIS pipeline.
+"""Unit tests for the in-process pipeline framework + Hunyuan3D pipeline.
 
-TRELLIS' real dependencies (CUDA kernels, gsplat, custom rasterizers) are
-not installed in the test environment.  These tests exercise the lazy-load
-fence, the payload validation, and the router contract using a stand-in
-pipeline.
+Hunyuan3D-2.1's real dependencies (torch + custom_rasterizer +
+differentiable_renderer CUDA extensions) aren't installed in the test
+environment.  These tests exercise the lazy-load fence, the payload
+validation, and the router contract using a stand-in pipeline.
 """
 
 import asyncio
@@ -13,7 +13,7 @@ import pytest
 
 from models import ModelTask
 from pipelines.base import InProcessPipeline
-from pipelines.img23d.trellis import TrellisPipeline
+from pipelines.img23d.hunyuan3d import Hunyuan3DPipeline
 from routers import pipelines as pipelines_router
 
 
@@ -77,32 +77,32 @@ def test_pipeline_reloads_after_unload():
 
 
 # ---------------------------------------------------------------------------
-# TRELLIS pipeline — only the bits we can test without the real model.
+# Hunyuan3D pipeline — only the bits we can test without the real model.
 # ---------------------------------------------------------------------------
 
 
-def test_trellis_pipeline_declares_task():
-    pipe = TrellisPipeline()
+def test_hunyuan3d_pipeline_declares_task():
+    pipe = Hunyuan3DPipeline()
     assert pipe.name == "img23d"
     assert pipe.task == ModelTask.IMAGETO3D
     assert pipe.loaded is False
 
 
-def test_trellis_load_raises_friendly_error_when_missing():
-    """In CI we don't have the TRELLIS package — load() must explain that
+def test_hunyuan3d_load_raises_friendly_error_when_missing():
+    """In CI we don't have the hy3dgen package — load() must explain that
     cleanly rather than blowing up with an opaque ImportError."""
-    pipe = TrellisPipeline()
+    pipe = Hunyuan3DPipeline()
     with pytest.raises(RuntimeError) as exc:
         _run(pipe._load())
-    assert "TRELLIS is not installed" in str(exc.value)
+    assert "Hunyuan3D" in str(exc.value)
 
 
-def test_trellis_validates_payload_missing_image():
+def test_hunyuan3d_validates_payload_missing_image():
     """``_run`` rejects payloads without ``image_b64`` even before invoking
-    the underlying TRELLIS instance — we never want to load the model
+    the underlying Hunyuan3D instance — we never want to load the model
     just to reject malformed input."""
 
-    pipe = TrellisPipeline()
+    pipe = Hunyuan3DPipeline()
     # Bypass the lazy load gate: pretend the model is already loaded.
     pipe._loaded = True
     pipe._impl = object()
@@ -112,8 +112,8 @@ def test_trellis_validates_payload_missing_image():
     assert "image_b64 is required" in str(exc.value)
 
 
-def test_trellis_validates_payload_bad_base64():
-    pipe = TrellisPipeline()
+def test_hunyuan3d_validates_payload_bad_base64():
+    pipe = Hunyuan3DPipeline()
     pipe._loaded = True
     pipe._impl = object()
 
