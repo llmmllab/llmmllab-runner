@@ -6,7 +6,11 @@
         "**/node_modules",
         "**/__pycache__",
         "**/venv",
-        "**/.venv"
+        "**/.venv",
+        "vendors"
+    ],
+    "extraPaths": [
+        "vendors/Hunyuan3D-2"
     ],
     "typeCheckingMode": "basic",
     "reportMissingImports": true,

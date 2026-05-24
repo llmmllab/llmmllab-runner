@@ -104,10 +104,12 @@ ENV CUDA_HOME=/usr/local/cuda \
 
 RUN ln -sf /usr/local/cuda/lib64/stubs/libcuda.so /usr/local/cuda/lib64/stubs/libcuda.so.1
 
-# Pinned to a specific Hunyuan3D-2 commit — the repo doesn't tag releases.
-ARG HUNYUAN3D_REF=main
-RUN git clone --depth=1 --branch=${HUNYUAN3D_REF} \
-    https://github.com/Tencent/Hunyuan3D-2.git /opt/hunyuan3d
+# Hunyuan3D-2 is vendored as a git submodule at ``vendors/Hunyuan3D-2``
+# (pinned SHA in .gitmodules + the parent repo's index).  Copy it into
+# the builder so its setup.py + CUDA extensions can build, and so the
+# editable install in ``/usr/local/lib/python3.12/dist-packages`` keeps
+# pointing at the right path when stage 4 copies dist-packages over.
+COPY vendors/Hunyuan3D-2 /opt/hunyuan3d
 
 # Use pip directly (Hunyuan3D's setup is pip-flavoured; uv would re-resolve
 # every transitive dep and we'd lose the requirements.txt pin set).

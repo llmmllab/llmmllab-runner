@@ -16,18 +16,24 @@ Core responsibilities:
 
 ### Pinned native dependencies (`vendors/`)
 
-`vendors/llama.cpp` and `vendors/stable-diffusion.cpp` are git submodules pinned to a specific commit. The Dockerfile builds both with CUDA from the submodule source, so the runtime image always matches what's checked in to git — no implicit "we pulled master at build time" behaviour.
+Three external sources are vendored as git submodules pinned to specific commits, so the runtime image always matches what's checked into git — no implicit "we pulled master at build time" behaviour:
 
-Update either dependency with:
+| Submodule | Used for |
+|-----------|----------|
+| `vendors/llama.cpp` | Text inference — compiled with CUDA in the Dockerfile, runs as `llama-server` subprocess |
+| `vendors/stable-diffusion.cpp` | Image generation + editing — compiled with CUDA, runs as `sd-server` subprocess |
+| `vendors/Hunyuan3D-2` | Image-to-3D (`hy3dgen` package) — installed editable in the runtime image, runs in-process |
+
+Update any of them with:
 
 ```bash
-cd vendors/llama.cpp && git fetch && git checkout <tag-or-commit>
+cd vendors/<name> && git fetch && git checkout <tag-or-commit>
 cd ../..
-git add vendors/llama.cpp
-git commit -m "bump llama.cpp to <tag>"
+git add vendors/<name>
+git commit -m "bump <name> to <tag>"
 ```
 
-The Makefile target `make vendor-sync` (`git submodule update --init --recursive`) initialises a fresh clone; `make vendor-status` shows the currently-pinned commits.
+The Makefile target `make vendor-sync` (`git submodule update --init --recursive`) initialises a fresh clone; `make vendor-status` shows the currently-pinned commits. `make vendor-install-py` runs an editable install of the Python-side vendors (currently just `hy3dgen` from `vendors/Hunyuan3D-2`) into the local venv so pyright + IDE jump-to-definition resolve `hy3dgen.*` symbols without needing the Docker image.
 
 ### Integration with llmmllab-api
 

@@ -13,11 +13,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          # Pull vendors/llama.cpp and vendors/stable-diffusion.cpp so the
-          # ruff exclude path and pytest testpaths resolve consistently with
-          # what developers see locally.  Tests don't import from vendors/
-          # directly, but ruff would walk into an uninitialised submodule
-          # directory and silently miss the exclude.
+          # Pull the vendored submodules (vendors/llama.cpp,
+          # vendors/stable-diffusion.cpp, vendors/Hunyuan3D-2) so the
+          # ruff exclude path and pytest testpaths resolve consistently
+          # with what developers see locally.  Tests don't import from
+          # vendors/ directly, but ruff would walk into an
+          # uninitialised submodule directory and silently miss the
+          # exclude.
           submodules: recursive
 
       - uses: astral-sh/setup-uv@v4
@@ -39,11 +41,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          # Pull vendors/llama.cpp and vendors/stable-diffusion.cpp so the
-          # ruff exclude path and pytest testpaths resolve consistently with
-          # what developers see locally.  Tests don't import from vendors/
-          # directly, but ruff would walk into an uninitialised submodule
-          # directory and silently miss the exclude.
+          # Pull the vendored submodules (vendors/llama.cpp,
+          # vendors/stable-diffusion.cpp, vendors/Hunyuan3D-2) so the
+          # ruff exclude path and pytest testpaths resolve consistently
+          # with what developers see locally.  Tests don't import from
+          # vendors/ directly, but ruff would walk into an
+          # uninitialised submodule directory and silently miss the
+          # exclude.
           submodules: recursive
 
       - uses: astral-sh/setup-uv@v4

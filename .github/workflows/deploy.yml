@@ -11,12 +11,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          # vendors/llama.cpp and vendors/stable-diffusion.cpp are git
-          # submodules.  The Dockerfile does ``COPY vendors/llama.cpp
-          # /llama.cpp`` and ``COPY vendors/stable-diffusion.cpp
-          # /stable-diffusion.cpp`` — without recursive checkout those
-          # directories are empty and the COPY layers fail with "no source
-          # files were specified".
+          # vendors/llama.cpp, vendors/stable-diffusion.cpp, and
+          # vendors/Hunyuan3D-2 are git submodules.  The Dockerfile
+          # COPYs each into the build context — without recursive
+          # checkout those directories are empty and the COPY layers
+          # fail with "no source files were specified".
           submodules: recursive
 
       - name: Build & Deploy

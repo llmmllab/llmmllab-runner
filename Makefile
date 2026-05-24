@@ -9,7 +9,7 @@ IMAGE    ?= llmmllab-runner
 TAG      ?= latest
 REGISTRY ?= 192.168.0.71:31500
 
-.PHONY: help install start start-reload validate clean test docker-build docker-run vendor-sync vendor-status
+.PHONY: help install start start-reload validate clean test docker-build docker-run vendor-sync vendor-status vendor-install-py
 
 ## Help
 help: ## Show this help
@@ -40,11 +40,17 @@ test-unit: ## Run unit tests only
 	$(UV) run pytest tests/unit -v
 
 ## Vendors (git submodules under vendors/)
-vendor-sync: ## Init and update llama.cpp + stable-diffusion.cpp submodules to the pinned commits
+##   vendors/llama.cpp             text inference (ggml-org/llama.cpp)
+##   vendors/stable-diffusion.cpp  image inference (leejet/stable-diffusion.cpp)
+##   vendors/Hunyuan3D-2           image-to-3D pipeline (Tencent/Hunyuan3D-2)
+vendor-sync: ## Init and update vendored submodules to their pinned commits
 	git submodule update --init --recursive
 
 vendor-status: ## Show pinned commit / current state of each vendor submodule
 	@git submodule status
+
+vendor-install-py: vendor-sync ## Editable-install the Python-side vendors locally for type hints + IDE jump-to-def (Hunyuan3D's hy3dgen package). Requires the runner's CUDA-bound deps (torch, kornia, timm) already in your venv if you want to actually run anything; without them you still get pyright/symbol resolution.
+	$(UV) pip install --no-deps -e vendors/Hunyuan3D-2
 
 ## Docker
 docker-build: vendor-sync ## Build Docker image (auto-syncs vendor submodules first)
