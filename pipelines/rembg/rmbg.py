@@ -59,14 +59,19 @@ from models import ModelTask
 from pipelines.base import InProcessPipeline
 
 
-_DEFAULT_MODEL_PATH = os.environ.get("RMBG_MODEL_PATH", "briaai/RMBG-2.0")
+# Yaml is the source of truth.  We resolve the on-disk path lazily on
+# first ``_load`` via ``ModelLoader.get_model_by_id("rmbg-2.0")`` and
+# read ``details.model_path``.  This keeps the runner deployment env
+# free of duplicate path config and lets ops point at a different model
+# directory by editing .models.yaml only.
+_MODEL_ID = "rmbg-2.0"
+
+# ``model_path`` is a path config field, not an output destination.
+# Keep ``RMBG_OUTPUT_DIR`` as an env override because the output dir is
+# pure runtime concern (where cached cutout PNGs live).
 _OUTPUT_DIR = os.environ.get(
     "RMBG_OUTPUT_DIR", os.path.join(SD_OUTPUT_DIR, "rembg")
 )
-# Pre-download path on the cluster's PVC.  The runner mounts /models
-# read-only, so we point ``RMBG_MODEL_PATH`` at the local layout
-# (config.json + model.safetensors + birefnet.py) to avoid the runtime
-# HF download on every cold start.
 _DEFAULT_INPUT_SIZE = int(os.environ.get("RMBG_INPUT_SIZE", "1024"))
 
 
@@ -84,12 +89,40 @@ class RMBGPipeline(InProcessPipeline):
     name = "rembg"
     task = ModelTask.IMAGETOIMAGE
 
+    #: Identifier in ``.models.yaml`` — used to look up
+    #: ``details.model_path`` lazily on first ``_load``.
+    model_id: str = _MODEL_ID
+
     def __init__(self, model_path: Optional[str] = None) -> None:
         super().__init__()
-        self._model_path = model_path or _DEFAULT_MODEL_PATH
+        # If an explicit override is passed, honour it (tests do this).
+        # Otherwise the path is resolved from .models.yaml in ``_load``.
+        self._model_path: Optional[str] = model_path
         self._impl: Any = None
         self._transform: Any = None
         self._device: str = "cpu"
+
+    def _resolve_model_path(self) -> str:
+        """Look up ``details.model_path`` from the model registry."""
+        from utils.model_loader import ModelLoader  # local — avoid import cycle
+
+        loader = ModelLoader()
+        model = loader.get_model_by_id(self.model_id)
+        if model is None:
+            raise RuntimeError(
+                f"RMBG pipeline could not find '{self.model_id}' in the "
+                f"model registry (.models.yaml).  Add an entry with "
+                f"``details.model_path`` pointing at the on-disk "
+                f"safetensors directory."
+            )
+        path = getattr(model.details, "model_path", None)
+        if not path:
+            raise RuntimeError(
+                f"RMBG pipeline: model '{self.model_id}' has no "
+                f"``details.model_path`` set in .models.yaml.  This "
+                f"field is required for in_process pipelines."
+            )
+        return path
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -107,6 +140,12 @@ class RMBGPipeline(InProcessPipeline):
 
         os.makedirs(_OUTPUT_DIR, exist_ok=True)
 
+        # Resolve the path from the model registry on first load (unless
+        # the constructor was given an explicit override, which is what
+        # the tests do).
+        if self._model_path is None:
+            self._model_path = self._resolve_model_path()
+
         self._logger.info(
             f"Loading briaai/RMBG-2.0 from {self._model_path}"
         )
@@ -122,9 +161,15 @@ class RMBGPipeline(InProcessPipeline):
             if torch.cuda.is_available():
                 self._device = "cuda"
                 self._impl.to("cuda")
-                # bf16 has a 10× speedup over fp32 on 3090 with no
-                # quality impact for this model.
-                self._impl.to(torch.bfloat16)
+                # fp16, not bf16 — BiRefNet uses torchvision's deformable
+                # convolutions and ``deformable_im2col`` only got a bf16
+                # CUDA kernel in torchvision 0.21+.  This image pins to
+                # torchvision 0.20.1 (Hunyuan3D's requirement set), so
+                # bf16 raises ``"deformable_im2col" not implemented for
+                # 'BFloat16'``.  fp16 has had a kernel since 0.15 and is
+                # BiRefNet's recommended inference precision — ~2×
+                # throughput vs fp32 and half the VRAM.
+                self._impl.to(torch.float16)
         except Exception as e:  # noqa: BLE001
             self._logger.warning(
                 f"Could not move RMBG to CUDA ({e}); using CPU"
@@ -164,7 +209,7 @@ class RMBGPipeline(InProcessPipeline):
         started = time.perf_counter()
         input_tensor = self._transform(image).unsqueeze(0).to(self._device)  # type: ignore[union-attr]
         if self._device == "cuda":
-            input_tensor = input_tensor.to(torch.bfloat16)
+            input_tensor = input_tensor.to(torch.float16)
 
         with torch.no_grad():
             preds = self._impl(input_tensor)[-1].sigmoid().float().cpu()  # type: ignore[union-attr]

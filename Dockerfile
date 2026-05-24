@@ -133,6 +133,10 @@ RUN cd hy3dgen/texgen/custom_rasterizer && python setup.py install
 RUN cd hy3dgen/texgen/differentiable_renderer && python setup.py install || \
     echo "WARN: differentiable_renderer build failed; texture gen disabled"
 
+# briaai/RMBG-2.0 (BiRefNet) deps — its trust_remote_code modeling file
+# imports kornia + timm.  Tiny relative to torch so no separate stage.
+RUN python -m pip install --no-cache-dir kornia timm
+
 # ---------------------------------------------------------------------------
 # Stage 4 — runtime image
 # ---------------------------------------------------------------------------

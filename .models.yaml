@@ -454,11 +454,12 @@
 #   POST /v1/images/remove-bg            (api wrapper, recommended)
 #   GET  /v1/images/remove-bg/<id>.png   (download cutout PNG)
 #
-# This is a doc-only yaml entry — there is no subprocess to launch.
-# /v1/server/create rejects ``provider: in_process`` with a pointer
-# to /v1/pipelines/*.  The pipeline itself lazy-loads weights from
-# /models/rmbg-2.0 (RMBG_MODEL_PATH env on the runner deployment) on
-# first request.
+# /v1/server/create rejects ``provider: in_process`` with a pointer to
+# /v1/pipelines/*.  The RMBG pipeline reads ``details.model_path`` from
+# this entry on first request and loads the safetensors + custom
+# BiRefNet code (birefnet.py) from there.  The repo is gated on HF; the
+# weights are pre-downloaded into the /models hostPath out-of-band so
+# the pod doesn't need an HF token at runtime.
 #
 # Tutorial: https://huggingface.co/briaai/RMBG-2.0
 # ---------------------------------------------------------------------------
@@ -477,6 +478,7 @@
     specialization: ImageToImage
     size: 884878856
     original_ctx: 0
+    model_path: /models/rmbg-2.0
   pipeline: rembg
   provider: in_process
 
@@ -488,10 +490,11 @@
 #   POST /v1/images/3d                   (api wrapper, recommended)
 #   GET  /v1/images/3d/<id>.glb          (download mesh)
 #
-# Doc-only yaml entry (same pattern as rmbg-2.0 above).  Pipeline
-# loads weights from /models/hunyuan3d (HUNYUAN3D_MODEL_PATH env on
-# the runner deployment) on first request; uses ~6 GiB VRAM for the
-# shape-only path.
+# Pipeline loads weights from $HY3DGEN_MODELS/<model_path>/<subfolder>
+# (default subfolder ``hunyuan3d-dit-v2-1``) on first request; uses
+# ~6 GiB VRAM for the shape-only path.  ``details.model_path`` here is
+# the relative path under HY3DGEN_MODELS (set to /models in the
+# Dockerfile), so the final disk path is /models/hunyuan3d.
 #
 # Tutorial: https://huggingface.co/tencent/Hunyuan3D-2.1
 # ---------------------------------------------------------------------------
@@ -510,5 +513,6 @@
     specialization: ImageToImage
     size: 14934302720
     original_ctx: 0
+    model_path: hunyuan3d
   pipeline: img23d
   provider: in_process

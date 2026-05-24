@@ -15,6 +15,8 @@ class ModelDetails(BaseModel):
     """Format of the model file (e.g., gguf)"""
     gguf_file: Annotated[Optional[str], Field(default=None, description="Path to the GGUF file if applicable")] = None
     """Path to the GGUF file if applicable"""
+    model_path: Annotated[Optional[str], Field(default=None, description="Filesystem path or HF repo id where the model lives (used by in_process pipelines that don't fit the gguf/safetensors-per-component shape)")] = None
+    """Filesystem path or HF repo id for in_process pipelines."""
     clip_model_path: Annotated[Optional[str], Field(default=None, description="Path to the CLIP model file for multimodal models (e.g., mmproj file)")] = None
     """Path to the CLIP model file for multimodal models (e.g., mmproj file)"""
     family: Annotated[str, Field(..., description="Primary model family this belongs to (e.g., llama, phi3)")]
