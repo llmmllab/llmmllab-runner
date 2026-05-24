@@ -161,10 +161,16 @@ ENV PYTHONUNBUFFERED=1 \
     HUNYUAN3D_MODEL_PATH=/models/hunyuan3d \
     SD_OUTPUT_DIR=/tmp/sd-out
 
-# Runtime-only apt deps (no compilers)
+# Runtime-only apt deps (no compilers).
+#
+# ``libgl1`` is required at runtime by pymeshlab (pulled in transitively
+# via hy3dgen.shapegen.postprocessors) — without it the import fails
+# with ``libGL.so.1: cannot open shared object file``.
+# ``libglib2.0-0`` is already there for opencv-style deps; ``libgomp1``
+# is the OpenMP runtime ggml uses for CPU paths.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 python3-venv \
-    curl libglib2.0-0 libgomp1 \
+    curl libglib2.0-0 libgomp1 libgl1 \
     && rm -rf /var/lib/apt/lists/* \
     && ln -sf /usr/bin/python3 /usr/bin/python
 
