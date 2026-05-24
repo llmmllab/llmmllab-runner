@@ -446,41 +446,9 @@
   pipeline: qwen-image-edit
   provider: stable_diffusion_cpp
 
-# ---------------------------------------------------------------------------
-# briaai/RMBG-2.0 (in-process pipeline — background removal)
-#
-# Reachable at:
-#   POST /v1/pipelines/rembg/run         (runner-direct)
-#   POST /v1/images/remove-bg            (api wrapper, recommended)
-#   GET  /v1/images/remove-bg/<id>.png   (download cutout PNG)
-#
-# /v1/server/create rejects ``provider: in_process`` with a pointer to
-# /v1/pipelines/*.  The RMBG pipeline reads ``details.model_path`` from
-# this entry on first request and loads the safetensors + custom
-# BiRefNet code (birefnet.py) from there.  The repo is gated on HF; the
-# weights are pre-downloaded into the /models hostPath out-of-band so
-# the pod doesn't need an HF token at runtime.
-#
-# Tutorial: https://huggingface.co/briaai/RMBG-2.0
-# ---------------------------------------------------------------------------
-- id: rmbg-2.0
-  name: "Bria RMBG-2.0"
-  model: "rmbg-2.0"
-  task: ImageToImage
-  modified_at: "2026-05-24T00:00:00+00:00"
-  digest: "0000000000000000000000000000000000000000000000000000000000000002"
-  details:
-    format: safetensors
-    family: birefnet
-    families:
-      - birefnet
-    parameter_size: 0.22B
-    specialization: ImageToImage
-    size: 884878856
-    original_ctx: 0
-    model_path: /models/rmbg-2.0
-  pipeline: rembg
-  provider: in_process
+# briaai/RMBG-2.0 (rembg pipeline) lives on the small runner — see
+# .models.small.yaml.  The big runner doesn't advertise it; the api
+# discovers ``rmbg-2.0`` on lsnode-4 via /v1/models and routes there.
 
 # ---------------------------------------------------------------------------
 # tencent/Hunyuan3D-2.1 (in-process pipeline — image-to-3D)

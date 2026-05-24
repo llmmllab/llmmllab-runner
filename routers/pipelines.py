@@ -44,10 +44,13 @@ from utils.logging import llmmllogger
 logger = llmmllogger.bind(component="pipelines_router")
 router = APIRouter(prefix="/v1/pipelines", tags=["pipelines"])
 
-# Single-instance registry, populated at import time.  Keeping this static
-# (rather than a runtime ``Dict[str, type[InProcessPipeline]]`` lookup) means
-# the FastAPI app surface is fully described by code review — no
-# late-bound registration paths to chase.
+# Single-instance registry, populated at import time.  Every runner
+# compiles every pipeline — the *advertised* set per runner comes from
+# .models.yaml (queried via ``GET /v1/models``), so the api uses the
+# yaml entries (provider=in_process, pipeline=<name>) to route a
+# pipeline request to whichever runner actually serves the matching
+# model id.  A runner that lacks the weights for a pipeline simply
+# never gets routed to.
 _REGISTRY: Dict[str, InProcessPipeline] = {
     Hunyuan3DPipeline.name: Hunyuan3DPipeline(),
     RMBGPipeline.name: RMBGPipeline(),
