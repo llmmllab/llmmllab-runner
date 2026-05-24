@@ -38,6 +38,7 @@ from fastapi.responses import FileResponse
 from config import SD_OUTPUT_DIR
 from pipelines.base import InProcessPipeline
 from pipelines.img23d.hunyuan3d import Hunyuan3DPipeline
+from pipelines.rembg.rmbg import RMBGPipeline
 from utils.logging import llmmllogger
 
 logger = llmmllogger.bind(component="pipelines_router")
@@ -49,6 +50,7 @@ router = APIRouter(prefix="/v1/pipelines", tags=["pipelines"])
 # late-bound registration paths to chase.
 _REGISTRY: Dict[str, InProcessPipeline] = {
     Hunyuan3DPipeline.name: Hunyuan3DPipeline(),
+    RMBGPipeline.name: RMBGPipeline(),
 }
 
 
@@ -180,3 +182,44 @@ def download_img23d_artifact(filename: str) -> FileResponse:
         media_type=media_type,
         filename=filename,
     )
+
+
+# ---------------------------------------------------------------------------
+# Static file serving for rembg outputs (cutout PNGs)
+# ---------------------------------------------------------------------------
+#
+# Mirrors the img23d/files endpoint above.  Used by the api's
+# ``GET /v1/images/remove-bg/{filename}`` to stream the alpha-composited
+# cutout PNG to clients without exposing the runner pod's filesystem.
+
+_REMBG_OUTPUT_DIR = os.environ.get(
+    "RMBG_OUTPUT_DIR", os.path.join(SD_OUTPUT_DIR, "rembg")
+)
+_REMBG_FILENAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}\.png$")
+
+
+@router.get("/rembg/files/{filename}")
+def download_rembg_artifact(filename: str) -> FileResponse:
+    """Serve a rembg cutout PNG by basename.  Filename must match
+    ``<id>.png``; anything else 400s as a traversal guard."""
+    if not _REMBG_FILENAME_RE.match(filename):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Invalid filename '{filename}'. "
+                "Expected <id>.png with alphanumeric id."
+            ),
+        )
+
+    file_path = os.path.join(_REMBG_OUTPUT_DIR, filename)
+    real_dir = os.path.realpath(_REMBG_OUTPUT_DIR)
+    real_path = os.path.realpath(file_path)
+    if not real_path.startswith(real_dir + os.sep) and real_path != real_dir:
+        raise HTTPException(status_code=400, detail="Path traversal blocked")
+    if not os.path.isfile(real_path):
+        raise HTTPException(
+            status_code=404,
+            detail=f"Artefact '{filename}' not found on this runner",
+        )
+
+    return FileResponse(real_path, media_type="image/png", filename=filename)

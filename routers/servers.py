@@ -207,10 +207,27 @@ async def create_server(request: Request, body: CreateServerRequest):
 
     # Dispatch to the right native runtime based on the model's declared
     # provider.  llama.cpp handles text/embeddings; stable-diffusion.cpp
-    # handles image generation (txt2img / img2img).  New providers slot in
-    # here without touching the proxy or cache.
+    # handles image generation (txt2img / img2img).  IN_PROCESS pipelines
+    # (Hunyuan3D, RMBG, …) don't have a subprocess to acquire — they live
+    # inside this Python process and are exposed at /v1/pipelines/*.
+    # New subprocess-backed providers slot in here without touching the
+    # proxy or cache.
     if model.provider == ModelProvider.STABLE_DIFFUSION_CPP:
         manager = SDCppServerManager(model=model, session_id=session_id)
+    elif model.provider == ModelProvider.IN_PROCESS:
+        raise HTTPException(
+            status_code=400,
+            detail=_build_error_response(
+                reason="in_process_pipeline",
+                message=(
+                    f"Model '{model.id}' is an in-process pipeline — "
+                    f"there is no subprocess server to acquire.  Call "
+                    f"POST /v1/pipelines/<pipeline_name>/run directly "
+                    f"(see GET /v1/pipelines)."
+                ),
+                requested_model=model.id,
+            ),
+        )
     else:
         manager = LlamaCppServerManager(model=model, session_id=session_id)
 

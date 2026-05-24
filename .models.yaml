@@ -445,3 +445,70 @@
     diffusion_fa: true
   pipeline: qwen-image-edit
   provider: stable_diffusion_cpp
+
+# ---------------------------------------------------------------------------
+# briaai/RMBG-2.0 (in-process pipeline — background removal)
+#
+# Reachable at:
+#   POST /v1/pipelines/rembg/run         (runner-direct)
+#   POST /v1/images/remove-bg            (api wrapper, recommended)
+#   GET  /v1/images/remove-bg/<id>.png   (download cutout PNG)
+#
+# This is a doc-only yaml entry — there is no subprocess to launch.
+# /v1/server/create rejects ``provider: in_process`` with a pointer
+# to /v1/pipelines/*.  The pipeline itself lazy-loads weights from
+# /models/rmbg-2.0 (RMBG_MODEL_PATH env on the runner deployment) on
+# first request.
+#
+# Tutorial: https://huggingface.co/briaai/RMBG-2.0
+# ---------------------------------------------------------------------------
+- id: rmbg-2.0
+  name: "Bria RMBG-2.0"
+  model: "rmbg-2.0"
+  task: ImageToImage
+  modified_at: "2026-05-24T00:00:00+00:00"
+  digest: "0000000000000000000000000000000000000000000000000000000000000002"
+  details:
+    format: safetensors
+    family: birefnet
+    families:
+      - birefnet
+    parameter_size: 0.22B
+    specialization: ImageToImage
+    size: 884878856
+    original_ctx: 0
+  pipeline: rembg
+  provider: in_process
+
+# ---------------------------------------------------------------------------
+# tencent/Hunyuan3D-2.1 (in-process pipeline — image-to-3D)
+#
+# Reachable at:
+#   POST /v1/pipelines/img23d/run        (runner-direct)
+#   POST /v1/images/3d                   (api wrapper, recommended)
+#   GET  /v1/images/3d/<id>.glb          (download mesh)
+#
+# Doc-only yaml entry (same pattern as rmbg-2.0 above).  Pipeline
+# loads weights from /models/hunyuan3d (HUNYUAN3D_MODEL_PATH env on
+# the runner deployment) on first request; uses ~6 GiB VRAM for the
+# shape-only path.
+#
+# Tutorial: https://huggingface.co/tencent/Hunyuan3D-2.1
+# ---------------------------------------------------------------------------
+- id: hunyuan3d-2.1
+  name: "Tencent Hunyuan3D-2.1"
+  model: "hunyuan3d-2.1"
+  task: ImageTo3D
+  modified_at: "2026-05-24T00:00:00+00:00"
+  digest: "0000000000000000000000000000000000000000000000000000000000000003"
+  details:
+    format: safetensors
+    family: hunyuan3d
+    families:
+      - hunyuan3d
+    parameter_size: 2.7B
+    specialization: ImageToImage
+    size: 14934302720
+    original_ctx: 0
+  pipeline: img23d
+  provider: in_process
