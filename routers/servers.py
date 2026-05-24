@@ -305,6 +305,23 @@ async def create_server(request: Request, body: CreateServerRequest):
     }
 
 
+@router.get("/v1/servers")
+def list_servers():
+    """List every server currently in the cache (any state).
+
+    Mirrors ``server_cache.stats()`` — returns ``active_servers`` plus a
+    flat list of every entry's id, model, port, use_count, etc.  Useful
+    for operations tooling (e.g. the force-shutdown script) that needs
+    to enumerate servers without knowing each id up-front; ``/health``
+    only reports the count.
+    """
+    from app import server_cache
+
+    if server_cache is None:
+        return {"active_servers": 0, "servers": []}
+    return server_cache.stats()
+
+
 @router.get("/v1/server/{server_id}")
 def get_server(server_id: str):
     """Get status of a running server."""
