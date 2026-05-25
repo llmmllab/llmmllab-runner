@@ -311,7 +311,7 @@ ENV PYTHONUNBUFFERED=1 \
 # is the OpenMP runtime ggml uses for CPU paths.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 python3-venv \
-    curl libglib2.0-0 libgomp1 libgl1 libglvnd0 \
+    curl libglib2.0-0 libgomp1 libgl1 libglvnd0 libopengl0 \
     && rm -rf /var/lib/apt/lists/* \
     && ln -sf /usr/bin/python3 /usr/bin/python
 
