@@ -7,3 +7,6 @@
 [submodule "vendors/Hunyuan3D-2"]
 	path = vendors/Hunyuan3D-2
 	url = https://github.com/Tencent/Hunyuan3D-2.git
+[submodule "vendors/Hunyuan3D-Part"]
+	path = vendors/Hunyuan3D-Part
+	url = https://github.com/Tencent-Hunyuan/Hunyuan3D-Part.git

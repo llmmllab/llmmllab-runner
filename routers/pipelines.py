@@ -38,6 +38,7 @@ from fastapi.responses import FileResponse
 from config import SD_OUTPUT_DIR
 from pipelines.base import InProcessPipeline
 from pipelines.img23d.hunyuan3d import Hunyuan3DPipeline
+from pipelines.img23d_part.hunyuan3d_part import Hunyuan3DPartPipeline
 from pipelines.rembg.rmbg import RMBGPipeline
 from utils.logging import llmmllogger
 
@@ -53,6 +54,7 @@ router = APIRouter(prefix="/v1/pipelines", tags=["pipelines"])
 # never gets routed to.
 _REGISTRY: Dict[str, InProcessPipeline] = {
     Hunyuan3DPipeline.name: Hunyuan3DPipeline(),
+    Hunyuan3DPartPipeline.name: Hunyuan3DPartPipeline(),
     RMBGPipeline.name: RMBGPipeline(),
 }
 
@@ -226,3 +228,56 @@ def download_rembg_artifact(filename: str) -> FileResponse:
         )
 
     return FileResponse(real_path, media_type="image/png", filename=filename)
+
+
+# ---------------------------------------------------------------------------
+# Static file serving for img23d_part outputs (.glb meshes)
+# ---------------------------------------------------------------------------
+#
+# Mirrors the img23d/files endpoint.  XPart emits four .glb files per
+# request (decomposed, exploded, bbox, gt_bbox) — all are served from
+# the same single endpoint and the filename suffix conveys which is
+# which (e.g. ``abc123_decomposed.glb``).  The api joins each path
+# with its short label so callers get four download URLs in one
+# response.
+
+_IMG23D_PART_OUTPUT_DIR = os.environ.get(
+    "HUNYUAN3D_PART_OUTPUT_DIR", os.path.join(SD_OUTPUT_DIR, "3d_parts")
+)
+# Accept the same hex-id prefix the pipeline emits plus the four
+# known suffixes.  ``_input.glb`` is also matched so failed runs can
+# be retrieved for debugging.
+_IMG23D_PART_FILENAME_RE = re.compile(
+    r"^[A-Za-z0-9_-]{1,64}_(decomposed|exploded|bbox|gt_bbox|input)\.glb$"
+)
+
+
+@router.get("/img23d_part/files/{filename}")
+def download_img23d_part_artifact(filename: str) -> FileResponse:
+    """Serve a Hunyuan3D-Part output ``.glb`` by basename.
+
+    Filename must match ``<id>_<role>.glb`` where ``<role>`` is one
+    of decomposed | exploded | bbox | gt_bbox | input.  Anything else
+    400s as a traversal guard.
+    """
+    if not _IMG23D_PART_FILENAME_RE.match(filename):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Invalid filename '{filename}'. "
+                "Expected <id>_<decomposed|exploded|bbox|gt_bbox|input>.glb"
+            ),
+        )
+
+    file_path = os.path.join(_IMG23D_PART_OUTPUT_DIR, filename)
+    real_dir = os.path.realpath(_IMG23D_PART_OUTPUT_DIR)
+    real_path = os.path.realpath(file_path)
+    if not real_path.startswith(real_dir + os.sep) and real_path != real_dir:
+        raise HTTPException(status_code=400, detail="Path traversal blocked")
+    if not os.path.isfile(real_path):
+        raise HTTPException(
+            status_code=404,
+            detail=f"Artefact '{filename}' not found on this runner",
+        )
+
+    return FileResponse(real_path, media_type="model/gltf-binary", filename=filename)

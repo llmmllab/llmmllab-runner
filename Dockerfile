@@ -139,6 +139,41 @@ RUN cd hy3dgen/texgen/differentiable_renderer && python setup.py install || \
 # imports kornia + timm.  Tiny relative to torch so no separate stage.
 RUN python -m pip install --no-cache-dir kornia timm
 
+# Hunyuan3D-Part (XPart + P3-SAM) deps — mesh decomposition pipeline.
+# Adds ~600 MB on top of Hunyuan3D-2.1's environment.
+#
+# - spconv-cu124    sparse 3D convolutions used by P3-SAM and XPart's
+#                   point-cloud encoder.  cu124 wheel is forward-compatible
+#                   with our CUDA 12.8 runtime (CUDA minor versions are
+#                   ABI-stable for compute libraries).
+# - fpsample        farthest-point sampling for surface point sets
+# - addict, easydict   YAML-driven config containers XPart uses to
+#                       instantiate sub-modules
+# - torch_cluster, torch_scatter   pulled from the PyG wheel index, must
+#                                   match torch 2.5 + CUDA 12.1 (same as
+#                                   the torch wheel above)
+RUN python -m pip install --no-cache-dir \
+    spconv-cu124 fpsample addict easydict scikit-learn
+RUN python -m pip install --no-cache-dir \
+    torch_cluster torch_scatter \
+    -f https://data.pyg.org/whl/torch-2.5.0+cu121.html || \
+    echo "WARN: torch_cluster/torch_scatter PyG wheels not available; falling back to source build (slow)"
+
+# Hunyuan3D-Part source tree.  Neither XPart nor P3-SAM ships a
+# setup.py at their root — only chamfer3D under
+# P3-SAM/utils/chamfer3D has one.  We:
+#   1. COPY the whole vendored tree into /opt/hunyuan3d-part
+#   2. Build chamfer3D as a CUDA extension (P3-SAM's hard dep)
+#   3. Add XPart/ and P3-SAM/ to PYTHONPATH at runtime so
+#      ``from partgen.partformer_pipeline import PartFormerPipeline``
+#      and ``from utils.chamfer3D import ...`` resolve.
+#
+# This is the same pattern Hunyuan3D-2 itself uses for its custom
+# rasterizer + renderer extensions — directory-on-PATH, not wheel.
+COPY vendors/Hunyuan3D-Part /opt/hunyuan3d-part
+RUN cd /opt/hunyuan3d-part/P3-SAM/utils/chamfer3D && python setup.py install || \
+    echo "WARN: chamfer3D build failed; P3-SAM will surface a clean error on first request"
+
 # ---------------------------------------------------------------------------
 # Stage 4 — runtime image
 # ---------------------------------------------------------------------------
@@ -148,7 +183,7 @@ FROM nvidia/cuda:12.8.1-cudnn-runtime-ubuntu24.04
 COPY --from=ghcr.io/astral-sh/uv:0.11 /uv /uvx /usr/local/bin/
 
 ENV PYTHONUNBUFFERED=1 \
-    PYTHONPATH="/app" \
+    PYTHONPATH="/app:/opt/hunyuan3d-part/XPart:/opt/hunyuan3d-part/P3-SAM" \
     SHARED_VENV="/opt/venv/shared" \
     UV_PROJECT_ENVIRONMENT="/opt/venv/shared" \
     UV_LINK_MODE=copy \
@@ -195,6 +230,11 @@ COPY --from=sd-builder /stable-diffusion.cpp /stable-diffusion.cpp
 # from the hunyuan-builder stage so the compiled custom_rasterizer /
 # differentiable_renderer extensions are available without a re-install.
 COPY --from=hunyuan-builder /opt/hunyuan3d /opt/hunyuan3d
+# Hunyuan3D-Part source tree (XPart/partgen + P3-SAM/utils).  Lives at
+# the same path the builder stage compiled chamfer3D against, so the
+# editable-import path resolves identically.  PYTHONPATH (set above)
+# adds both XPart/ and P3-SAM/ to sys.path at runtime.
+COPY --from=hunyuan-builder /opt/hunyuan3d-part /opt/hunyuan3d-part
 COPY --from=hunyuan-builder /usr/local/lib/python3.12/dist-packages \
     /usr/local/lib/python3.12/dist-packages
 # torch ships ~3 GB of CUDA libs that the runtime image's cudnn-runtime

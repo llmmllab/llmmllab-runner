@@ -484,3 +484,49 @@
     model_path: hunyuan3d
   pipeline: img23d
   provider: in_process
+
+# ---------------------------------------------------------------------------
+# tencent/Hunyuan3D-Part (in-process pipeline — mesh-to-parts decomposition)
+#
+# Two stages bundled together:
+#   1. P3-SAM      — predicts part bounding boxes from the input mesh
+#   2. XPart       — regenerates each detected part as high-fidelity geometry
+#
+# Reachable at:
+#   POST /v1/pipelines/img23d_part/run        (runner-direct)
+#   POST /v1/3d/parts                          (api wrapper, recommended)
+#   GET  /v1/3d/parts/<id>_<role>.glb          (download outputs;
+#                                               role = decomposed | exploded
+#                                               | bbox | gt_bbox)
+#
+# Input: a base64-encoded ``.glb`` (typically the output of an earlier
+# Hunyuan3D-2.1 run via ``/v1/images/3d``).  XPart prefers AI-generated
+# or scanned meshes — scratch-built CAD geometry can confuse P3-SAM.
+#
+# Weights pre-downloaded to /models/hunyuan3d-part on lsnode-3
+# (~9.5 GB safetensors: conditioner + model + p3sam + shapevae).
+# Requires the runner image to ship spconv-cu124, torch_cluster,
+# torch_scatter, and the vendored XPart partgen package
+# (vendors/Hunyuan3D-Part/XPart).  fp32 only — spconv kernels + the
+# bbox predictor are float32-only paths, so no bf16/fp16 downcast.
+#
+# Tutorial: https://huggingface.co/tencent/Hunyuan3D-Part
+# ---------------------------------------------------------------------------
+- id: hunyuan3d-part
+  name: "Tencent Hunyuan3D-Part"
+  model: "hunyuan3d-part"
+  task: ImageTo3D
+  modified_at: "2026-05-24T00:00:00+00:00"
+  digest: "0000000000000000000000000000000000000000000000000000000000000004"
+  details:
+    format: safetensors
+    family: hunyuan3d
+    families:
+      - hunyuan3d
+    parameter_size: 9B
+    specialization: ImageToImage
+    size: 9491429340
+    original_ctx: 0
+    model_path: /models/hunyuan3d-part
+  pipeline: img23d_part
+  provider: in_process
