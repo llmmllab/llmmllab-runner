@@ -210,24 +210,46 @@ class Hunyuan3DPartPipeline(InProcessPipeline):
                 )
         device = primary_device
 
+        # Precision knob.  Default fp16 — 2× memory cut over fp32,
+        # comparable quality for transformer + VAE workloads, and
+        # spconv 2.x supports fp16 for its sparse conv ops.  Set
+        # ``HUNYUAN3D_PART_DTYPE=fp32`` if a specific submodule fails
+        # in fp16 (typically a sign of an unsupported sparse op or
+        # numerical overflow in a normalization layer) or set ``bf16``
+        # for the wider exponent at the cost of less precision.
+        dtype_env = os.environ.get("HUNYUAN3D_PART_DTYPE", "fp16").lower()
+        dtype_map = {
+            "fp32": torch.float32,
+            "float32": torch.float32,
+            "fp16": torch.float16,
+            "float16": torch.float16,
+            "half": torch.float16,
+            "bf16": torch.bfloat16,
+            "bfloat16": torch.bfloat16,
+        }
+        if dtype_env not in dtype_map:
+            raise RuntimeError(
+                f"HUNYUAN3D_PART_DTYPE={dtype_env!r} is not one of "
+                f"{sorted(dtype_map)}.  Default is fp16."
+            )
+        target_dtype = dtype_map[dtype_env]
+
         self._logger.info(
-            f"Loading Hunyuan3D-Part (XPart) from {self._model_path}"
+            f"Loading Hunyuan3D-Part (XPart) from {self._model_path} "
+            f"in {dtype_env} on {device}"
         )
         # XPart's ``smart_load_model`` joins HY3DGEN_MODELS + model_path.
         # We pass an absolute path to make the resolution deterministic
         # regardless of HY3DGEN_MODELS env value.
         self._impl = PartFormerPipeline.from_pretrained(
             model_path=self._model_path,
-            dtype=torch.float32,
+            dtype=target_dtype,
             device=device,
         )
 
-        # XPart requires fp32 for stability (spconv kernels + the
-        # bbox predictor are float32-only paths).  No bf16/fp16
-        # downcast here unlike rembg/Hunyuan3D-2.1's shape pass.
         try:
             if device.startswith("cuda"):
-                self._impl.to(device=device, dtype=torch.float32)
+                self._impl.to(device=device, dtype=target_dtype)
         except Exception as e:  # noqa: BLE001
             self._logger.warning(
                 f"Could not move Hunyuan3D-Part to {device} ({e}); using CPU"
