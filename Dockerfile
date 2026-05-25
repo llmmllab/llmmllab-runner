@@ -219,7 +219,16 @@ RUN sed -i \
     sed -i 's|self\.model_parallel = torch\.nn\.DataParallel(self\.model)|self.model_parallel = self.model|' \
         /opt/hunyuan3d-part/XPart/partgen/bbox_estimator/auto_mask_api.py \
         /opt/hunyuan3d-part/P3-SAM/demo/auto_mask.py \
-        /opt/hunyuan3d-part/P3-SAM/demo/auto_mask_no_postprocess.py
+        /opt/hunyuan3d-part/P3-SAM/demo/auto_mask_no_postprocess.py && \
+    # XPart's check_inputs hardcodes ``num_points=81920`` for the
+    # per-part surface point sample.  With N parts the conditioner's
+    # input tensor is ``N × 81920 × 7 × 4 bytes`` (fp32) ≈ 16 GB at
+    # N=7 — bigger than any single 3090 forward-pass workspace can
+    # hold.  Reduce to 32768 (5× lower memory, quality impact mild
+    # on the demo workloads we've validated).  Tune higher if you
+    # find part fidelity insufficient AND you have headroom.
+    sed -i 's|num_points=81920|num_points=32768|' \
+        /opt/hunyuan3d-part/XPart/partgen/partformer_pipeline.py
 RUN cd /opt/hunyuan3d-part/P3-SAM/utils/chamfer3D && python setup.py install || \
     echo "WARN: chamfer3D build failed; P3-SAM will surface a clean error on first request"
 
