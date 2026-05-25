@@ -159,18 +159,34 @@ RUN python -m pip install --no-cache-dir \
     -f https://data.pyg.org/whl/torch-2.5.0+cu121.html || \
     echo "WARN: torch_cluster/torch_scatter PyG wheels not available; falling back to source build (slow)"
 
+# flash-attn — required by XPart's Sonata point-transformer encoder.
+# Building from source needs nvcc + 30+ min of compile time; instead
+# install Dao-AILab's prebuilt wheel matching torch 2.5 + CUDA 12 +
+# CPython 3.12 (the combo this image already uses).  ABI flag must be
+# ``cxx11abiFALSE`` to match the torch wheel we install above.
+RUN curl -sSL -o /tmp/flash_attn.whl \
+        https://github.com/Dao-AILab/flash-attention/releases/download/v2.7.4.post1/flash_attn-2.7.4.post1+cu12torch2.5cxx11abiFALSE-cp312-cp312-linux_x86_64.whl && \
+    python -m pip install --no-cache-dir --no-deps /tmp/flash_attn.whl && \
+    rm /tmp/flash_attn.whl
+
 # Hunyuan3D-Part source tree.  Neither XPart nor P3-SAM ships a
 # setup.py at their root — only chamfer3D under
 # P3-SAM/utils/chamfer3D has one.  We:
 #   1. COPY the whole vendored tree into /opt/hunyuan3d-part
-#   2. Build chamfer3D as a CUDA extension (P3-SAM's hard dep)
-#   3. Add XPart/ and P3-SAM/ to PYTHONPATH at runtime so
+#   2. Patch P3-SAM/model.py to use explicit ``partgen.models`` /
+#      ``partgen.utils.misc`` import paths (the upstream code does
+#      ``from models import sonata`` which would collide with our
+#      app's own ``models`` package on PYTHONPATH).
+#   3. Build chamfer3D as a CUDA extension (P3-SAM's hard dep)
+#   4. Add XPart/ and P3-SAM/ to PYTHONPATH at runtime so
 #      ``from partgen.partformer_pipeline import PartFormerPipeline``
 #      and ``from utils.chamfer3D import ...`` resolve.
 #
 # This is the same pattern Hunyuan3D-2 itself uses for its custom
 # rasterizer + renderer extensions — directory-on-PATH, not wheel.
 COPY vendors/Hunyuan3D-Part /opt/hunyuan3d-part
+RUN sed -i 's|^from models import sonata|from partgen.models import sonata|; s|^from utils\.misc import smart_load_model|from partgen.utils.misc import smart_load_model|' \
+        /opt/hunyuan3d-part/P3-SAM/model.py
 RUN cd /opt/hunyuan3d-part/P3-SAM/utils/chamfer3D && python setup.py install || \
     echo "WARN: chamfer3D build failed; P3-SAM will surface a clean error on first request"
 

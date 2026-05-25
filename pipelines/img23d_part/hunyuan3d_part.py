@@ -97,6 +97,8 @@ class Hunyuan3DPartPipeline(InProcessPipeline):
         # at first load.  Tests pass an explicit path.
         self._model_path: Optional[str] = model_path
         self._impl: Any = None
+        # Set by ``_load`` to ``cuda:N`` (N = freest GPU) or ``cpu``.
+        self._device: str = "cpu"
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -139,6 +141,27 @@ class Hunyuan3DPartPipeline(InProcessPipeline):
         if self._model_path is None:
             self._model_path = self._resolve_model_path()
 
+        # XPart needs >12 GB VRAM (the multi-model architecture loads
+        # conditioner + UNet + VAE + P3-SAM + Sonata + bbox predictor
+        # simultaneously).  The runner box has a mix of 3060 (12 GB)
+        # and 3090s (24 GB) — defaulting to ``cuda:0`` lands on the
+        # 3060 and OOMs at load time.  Pick the device with the most
+        # free VRAM at load time instead.
+        device = "cpu"
+        if torch.cuda.is_available():
+            best_idx = 0
+            best_free = -1
+            for i in range(torch.cuda.device_count()):
+                free, _total = torch.cuda.mem_get_info(i)
+                if free > best_free:
+                    best_free = free
+                    best_idx = i
+            device = f"cuda:{best_idx}"
+            self._logger.info(
+                f"Selected {device} for XPart "
+                f"({best_free / 1024**3:.1f} GB free)"
+            )
+
         self._logger.info(
             f"Loading Hunyuan3D-Part (XPart) from {self._model_path}"
         )
@@ -148,19 +171,21 @@ class Hunyuan3DPartPipeline(InProcessPipeline):
         self._impl = PartFormerPipeline.from_pretrained(
             model_path=self._model_path,
             dtype=torch.float32,
-            device="cuda" if torch.cuda.is_available() else "cpu",
+            device=device,
         )
 
         # XPart requires fp32 for stability (spconv kernels + the
         # bbox predictor are float32-only paths).  No bf16/fp16
         # downcast here unlike rembg/Hunyuan3D-2.1's shape pass.
         try:
-            if torch.cuda.is_available():
-                self._impl.to(device="cuda", dtype=torch.float32)
+            if device.startswith("cuda"):
+                self._impl.to(device=device, dtype=torch.float32)
         except Exception as e:  # noqa: BLE001
             self._logger.warning(
-                f"Could not move Hunyuan3D-Part to CUDA ({e}); using CPU"
+                f"Could not move Hunyuan3D-Part to {device} ({e}); using CPU"
             )
+        # Remember the chosen device so _run can move input tensors to it.
+        self._device = device
 
     async def _run(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         """Run XPart on one input mesh.

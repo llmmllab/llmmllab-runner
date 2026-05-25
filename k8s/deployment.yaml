@@ -61,8 +61,12 @@ spec:
             - name: slots
               mountPath: /slots
           env:
+            # Includes XPart + P3-SAM source dirs so the in-process
+            # Hunyuan3D-Part pipeline (``pipelines/img23d_part``) can
+            # ``from partgen.partformer_pipeline import ...``.  Neither
+            # XPart nor P3-SAM ships a wheel — they're directory-on-PATH.
             - name: PYTHONPATH
-              value: "/app"
+              value: "/app:/opt/hunyuan3d-part/XPart:/opt/hunyuan3d-part/P3-SAM"
             - name: PYTHONUNBUFFERED
               value: "1"
             # Used by utils/dcgm_metrics.py to filter DCGM exporter scrapes
@@ -191,8 +195,12 @@ spec:
             - name: slots
               mountPath: /slots
           env:
+            # Includes XPart + P3-SAM source dirs so the in-process
+            # Hunyuan3D-Part pipeline (``pipelines/img23d_part``) can
+            # ``from partgen.partformer_pipeline import ...``.  Neither
+            # XPart nor P3-SAM ships a wheel — they're directory-on-PATH.
             - name: PYTHONPATH
-              value: "/app"
+              value: "/app:/opt/hunyuan3d-part/XPart:/opt/hunyuan3d-part/P3-SAM"
             - name: PYTHONUNBUFFERED
               value: "1"
             # Used by utils/dcgm_metrics.py to filter DCGM exporter scrapes
