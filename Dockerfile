@@ -164,10 +164,14 @@ RUN python -m pip install --no-cache-dir \
 # install Dao-AILab's prebuilt wheel matching torch 2.5 + CUDA 12 +
 # CPython 3.12 (the combo this image already uses).  ABI flag must be
 # ``cxx11abiFALSE`` to match the torch wheel we install above.
-RUN curl -sSL -o /tmp/flash_attn.whl \
+# pip rejects ``flash_attn.whl`` (filename must encode the version),
+# so save under the canonical wheel name.  ``+cu12torch2.5cxx11abiFALSE``
+# is a local-version tag in PEP 440 terms; pip accepts it in the local
+# install path without resolving against PyPI.
+RUN curl -sSL -o /tmp/flash_attn-2.7.4.post1-cp312-cp312-linux_x86_64.whl \
         https://github.com/Dao-AILab/flash-attention/releases/download/v2.7.4.post1/flash_attn-2.7.4.post1+cu12torch2.5cxx11abiFALSE-cp312-cp312-linux_x86_64.whl && \
-    python -m pip install --no-cache-dir --no-deps /tmp/flash_attn.whl && \
-    rm /tmp/flash_attn.whl
+    python -m pip install --no-cache-dir --no-deps /tmp/flash_attn-2.7.4.post1-cp312-cp312-linux_x86_64.whl && \
+    rm /tmp/flash_attn-2.7.4.post1-cp312-cp312-linux_x86_64.whl
 
 # Hunyuan3D-Part source tree.  Neither XPart nor P3-SAM ships a
 # setup.py at their root — only chamfer3D under
