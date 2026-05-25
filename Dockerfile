@@ -220,15 +220,15 @@ RUN sed -i \
         /opt/hunyuan3d-part/XPart/partgen/bbox_estimator/auto_mask_api.py \
         /opt/hunyuan3d-part/P3-SAM/demo/auto_mask.py \
         /opt/hunyuan3d-part/P3-SAM/demo/auto_mask_no_postprocess.py && \
-    # XPart's check_inputs hardcodes ``num_points=81920`` for the
-    # per-part surface point sample.  With N parts the conditioner's
-    # input tensor is ``N × 81920 × 7 × 4 bytes`` (fp32) ≈ 16 GB at
-    # N=7 — bigger than any single 3090 forward-pass workspace can
-    # hold.  Reduce to 32768 (5× lower memory, quality impact mild
-    # on the demo workloads we've validated).  Tune higher if you
-    # find part fidelity insufficient AND you have headroom.
-    sed -i 's|num_points=81920|num_points=32768|' \
-        /opt/hunyuan3d-part/XPart/partgen/partformer_pipeline.py && \
+    # NOTE: We do NOT change ``num_points=81920`` in
+    # ``check_inputs``.  That dictates the surface sample count the
+    # XPart shape VAE encoder consumes — it's hardcoded into the
+    # autoencoder's ``torch.split(pc, [pc_size, pc_sharpedge_size])``
+    # which expects pc.shape[1] == 81920.  Reducing it crashes with
+    # ``split_with_sizes expects split_sizes to sum exactly to 32768
+    # (input tensor's size at dimension 1), but got split_sizes=
+    # [81920, 0]``.  Keep the upstream value; the fp16 cast on the
+    # conditioner does the memory savings instead.
     # P3-SAM's bbox predictor batches prompts at ``bs=64`` inside
     # mesh_sam.  At each iteration the segmenter forward holds
     # *multiple* ``[N=100000, K, *]`` intermediate tensors
