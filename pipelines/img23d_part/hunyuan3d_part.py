@@ -141,29 +141,50 @@ class Hunyuan3DPartPipeline(InProcessPipeline):
         if self._model_path is None:
             self._model_path = self._resolve_model_path()
 
-        # XPart needs >12 GB VRAM (the multi-model architecture loads
-        # conditioner + UNet + VAE + P3-SAM + Sonata + bbox predictor
-        # simultaneously).  The runner box has a mix of 3060 (12 GB)
-        # and 3090s (24 GB) — defaulting to ``cuda:0`` lands on the
-        # 3060 and OOMs at load time.  Pick the device with the most
-        # free VRAM at load time instead.
+        # XPart needs ~23 GB VRAM peak (~17 GB resident for all
+        # submodules + ~6 GB inference workspace).  The runner box has
+        # a mix of 3060 (12 GB) and 3090s (24 GB).  Pick by free VRAM
+        # but FILTER first on total capacity — a 3060 with 11 GB free
+        # is "freer" than a 3090 with 10 GB free, but XPart can't fit
+        # on a 3060 at all and would OOM at load time.
+        #
+        # Tuning knob: ``HUNYUAN3D_PART_MIN_VRAM_GB`` (default 20) is
+        # the per-GPU floor.  Set lower if you have a custom card
+        # smaller than a 3090 but bigger than 12 GB.
         device = "cpu"
         if torch.cuda.is_available():
-            best_idx = 0
+            min_total_bytes = int(
+                os.environ.get("HUNYUAN3D_PART_MIN_VRAM_GB", "20")
+            ) * 1024 ** 3
+            best_idx = -1
             best_free = -1
             for i in range(torch.cuda.device_count()):
-                free, _total = torch.cuda.mem_get_info(i)
+                free, total = torch.cuda.mem_get_info(i)
+                if total < min_total_bytes:
+                    self._logger.debug(
+                        f"Skipping cuda:{i} ({total / 1024**3:.1f} GB total "
+                        f"< {min_total_bytes / 1024**3:.0f} GB floor)"
+                    )
+                    continue
                 if free > best_free:
                     best_free = free
                     best_idx = i
+            if best_idx < 0:
+                raise RuntimeError(
+                    f"No CUDA device with >= "
+                    f"{min_total_bytes / 1024**3:.0f} GB total VRAM is "
+                    f"available; XPart needs ~23 GB peak.  Set "
+                    f"HUNYUAN3D_PART_MIN_VRAM_GB lower if your hardware "
+                    f"genuinely has none."
+                )
             device = f"cuda:{best_idx}"
             # Also pin the process's default cuda device to ``best_idx``
             # so any submodule that constructs tensors with bare
-            # ``cuda`` (no explicit index) lands on the same GPU.  Without
-            # this, XPart's conditioner ends up on cuda:0 while
-            # P3-SAM lands on best_idx and the first cross-module
-            # tensor op trips NCCL (multi-GPU transfer) with an
-            # "unhandled system error".
+            # ``cuda`` (no explicit index) lands on the same GPU.
+            # Without this, XPart's conditioner ends up on cuda:0
+            # while P3-SAM lands on best_idx and the first
+            # cross-module tensor op trips NCCL (multi-GPU transfer)
+            # with an "unhandled system error".
             torch.cuda.set_device(best_idx)
             self._logger.info(
                 f"Selected {device} for XPart "
