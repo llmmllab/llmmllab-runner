@@ -478,4 +478,97 @@ class ModelParameters(BaseModel):
     ] = None
     """sd-server --img-cfg-scale (image-preservation pressure for Qwen-Image-Edit etc.)."""
 
+    # ------------------------------------------------------------------
+    # Hunyuan3D-2.1 / img23d + img23d_part inference knobs.
+    #
+    # These travel in the runner's pipeline payload (``POST
+    # /v1/pipelines/img23d/run``) — they are NOT CLI flags.  Defined
+    # here so per-model defaults can live in ``.models.yaml`` and the
+    # api layer doesn't have to thread every knob through its
+    # request/response schemas.  Per-request overrides win over
+    # yaml defaults via the standard precedence
+    # (explicit kwarg > model.parameters > pipeline-baked default).
+    # ------------------------------------------------------------------
+    num_inference_steps: Annotated[
+        Optional[int],
+        Field(
+            default=None,
+            description="Diffusion sampling steps for Hunyuan3D-2.1 (and XPart).  "
+            "Hunyuan3D-2.1 default 30 in the pipeline; XPart hardcodes 50 "
+            "internally and ignores this field for now.  More steps = "
+            "sharper SDF surface but linearly more wall-clock time.",
+            ge=1,
+        ),
+    ] = None
+    """Hunyuan3D diffusion steps."""
+
+    hy3d_guidance_scale: Annotated[
+        Optional[float],
+        Field(
+            default=None,
+            description="Hunyuan3D-2.1 classifier-free guidance scale (different from the "
+            "SD ``cfg_scale`` field — kept separate so per-model yamls don't have to "
+            "redeclare both for sd-server and Hunyuan3D entries).  Pipeline default "
+            "5.5.  Lower values (3-5) give cleaner geometry but less prompt fidelity; "
+            "higher (7-10) sharpens features at the cost of artefacts.",
+            ge=0.0,
+        ),
+    ] = None
+    """Hunyuan3D-2.1 guidance_scale (separate from SD cfg_scale)."""
+
+    octree_resolution: Annotated[
+        Optional[int],
+        Field(
+            default=None,
+            description="Marching-cubes octree resolution for Hunyuan3D-2.1 mesh extraction.  "
+            "Pipeline default 512.  256 is ~4× faster and noticeably blockier; 1024 is "
+            "~4× slower and rarely yields visible improvement.  Bigger numbers also need "
+            "linearly more VRAM during the MC chunk sweep.",
+            ge=64,
+        ),
+    ] = None
+    """Hunyuan3D marching-cubes resolution."""
+
+    mc_level: Annotated[
+        Optional[float],
+        Field(
+            default=None,
+            description="SDF threshold for marching cubes — the isosurface level where the "
+            "implicit function is sampled.  Hunyuan3D-2.1 default ``-1/512 ≈ -0.00195``, "
+            "which slightly biases the surface OUTSIDE the SDF zero-crossing and tends to "
+            "include a flat 'ghost platform' below the subject when the input image had "
+            "any non-transparent pixels in the lower region.  Set to ``0.0`` for the "
+            "true zero-crossing (tighter geometry, no ghost platform, but small surface "
+            "features can pinch off).  Negative values thicken the mesh; positive values "
+            "carve into it.",
+        ),
+    ] = None
+    """Hunyuan3D marching-cubes SDF threshold (tune to suppress ghost platforms)."""
+
+    box_v: Annotated[
+        Optional[float],
+        Field(
+            default=None,
+            description="Padding factor for the marching-cubes bounding volume.  Pipeline "
+            "default 1.01 (1% padding around the subject's bbox).  Set to ``1.0`` for "
+            "exact bbox — this is the other lever for removing ghost-platform artefacts "
+            "since 1% padding sometimes catches a sliver of the floor plane.",
+            ge=1.0,
+            le=1.5,
+        ),
+    ] = None
+    """Hunyuan3D bounding-volume padding factor."""
+
+    num_chunks: Annotated[
+        Optional[int],
+        Field(
+            default=None,
+            description="Marching-cubes chunk size for Hunyuan3D-2.1.  Pipeline default "
+            "400000.  Smaller = less VRAM during MC at the cost of more chunk overhead; "
+            "200000 is a safe halving when the SD-server is competing for memory.",
+            ge=10000,
+        ),
+    ] = None
+    """Hunyuan3D MC chunk size."""
+
     model_config = ConfigDict(extra="ignore")

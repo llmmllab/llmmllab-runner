@@ -482,6 +482,33 @@
     size: 14934302720
     original_ctx: 0
     model_path: hunyuan3d
+  parameters:
+    # Hunyuan3D-2.1 has a tendency to add a flat "ghost platform"
+    # under the subject — the SDF gets biased outside the zero
+    # crossing by the pipeline's default ``mc_level=-1/512``, and
+    # any non-zero alpha in the lower part of the conditioning
+    # image bleeds into a floor plane.  Tuning the inference knobs
+    # below removes the platform on most cutouts:
+    #
+    # - ``mc_level: 0.0``    — extract the true zero-crossing
+    #   (instead of the default slightly-outside one).  Tighter
+    #   geometry, no floor.
+    # - ``box_v: 1.0``       — drop the 1% bbox padding; the padded
+    #   region was the other place where stray floor pixels got
+    #   captured.
+    # - ``num_inference_steps: 30`` and ``hy3d_guidance_scale:
+    #   5.5`` are the pipeline-baked defaults restated here so
+    #   ops can tune from a single source of truth.
+    #
+    # If a particular subject ends up with pinched / hollow
+    # geometry (over-aggressive surface), nudge ``mc_level`` to
+    # ``-0.001`` or ``box_v`` to ``1.005``.
+    num_inference_steps: 30
+    hy3d_guidance_scale: 5.5
+    octree_resolution: 512
+    mc_level: 0.0
+    box_v: 1.0
+    num_chunks: 400000
   pipeline: img23d
   provider: in_process
 

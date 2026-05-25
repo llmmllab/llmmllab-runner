@@ -81,6 +81,33 @@ _INSTALL_HINT = (
 )
 
 
+def _read_yaml_defaults(klass_name: str) -> Dict[str, Any]:
+    """Read Hunyuan3D inference defaults from .models.yaml.
+
+    Looks up the first model entry whose ``pipeline`` field matches
+    this pipeline's ``name`` and returns its ``parameters`` dict.  On
+    any error (file missing, no matching model, no parameters block),
+    returns an empty dict so the caller falls back to baked defaults.
+    """
+    try:
+        from utils.model_loader import ModelLoader
+        from models import ModelProvider
+
+        loader = ModelLoader()
+        for model in loader.get_available_models().values():
+            if model.provider != ModelProvider.IN_PROCESS:
+                continue
+            if getattr(model, "pipeline", None) != "img23d":
+                continue
+            params = getattr(model, "parameters", None)
+            if params is None:
+                continue
+            return params.model_dump(exclude_none=True)
+    except Exception:
+        pass
+    return {}
+
+
 class Hunyuan3DPipeline(InProcessPipeline):
     """Image-to-3D pipeline backed by Tencent Hunyuan3D-2.1."""
 
@@ -183,6 +210,13 @@ class Hunyuan3DPipeline(InProcessPipeline):
 
         image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
 
+        # Layered resolution for inference knobs: explicit payload
+        # fields win, then per-model defaults from .models.yaml
+        # ``parameters`` block, then the pipeline-baked
+        # Hunyuan3D defaults.  The .models.yaml lookup is lazy so
+        # tests that pass a payload directly don't need to set up
+        # the ModelLoader.
+        defaults = _read_yaml_defaults(self.__class__.__name__)
         kwargs: Dict[str, Any] = {}
         if "seed" in payload:
             try:
@@ -200,16 +234,44 @@ class Hunyuan3DPipeline(InProcessPipeline):
                     pass
             except (TypeError, ValueError):
                 pass
-        if "num_inference_steps" in payload:
-            try:
-                kwargs["num_inference_steps"] = int(payload["num_inference_steps"])
-            except (TypeError, ValueError):
-                pass
-        if "guidance_scale" in payload:
-            try:
-                kwargs["guidance_scale"] = float(payload["guidance_scale"])
-            except (TypeError, ValueError):
-                pass
+
+        # ``_pick`` reads from payload first, then from yaml defaults.
+        # All Hunyuan3D inference knobs flow through this so a single
+        # ``parameters: { mc_level: 0.0 }`` line in .models.yaml
+        # changes the default for every request without forcing every
+        # caller to specify the field.
+        def _pick(name: str, cast):
+            if name in payload:
+                try:
+                    return cast(payload[name])
+                except (TypeError, ValueError):
+                    return None
+            if name in defaults:
+                try:
+                    return cast(defaults[name])
+                except (TypeError, ValueError):
+                    return None
+            return None
+
+        for field, cast in (
+            ("num_inference_steps", int),
+            ("guidance_scale", float),
+            ("octree_resolution", int),
+            ("mc_level", float),
+            ("box_v", float),
+            ("num_chunks", int),
+        ):
+            val = _pick(field, cast)
+            if val is not None:
+                kwargs[field] = val
+        # ``hy3d_guidance_scale`` in yaml aliases to
+        # ``guidance_scale`` at the pipeline call level (kept distinct
+        # in ModelParameters so the SD cfg_scale field can coexist
+        # without confusion).
+        if "guidance_scale" not in kwargs:
+            alias = _pick("hy3d_guidance_scale", float)
+            if alias is not None:
+                kwargs["guidance_scale"] = alias
 
         started = time.perf_counter()
         # Hunyuan3DDiTFlowMatchingPipeline returns a list of trimesh
