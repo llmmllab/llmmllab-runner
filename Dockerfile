@@ -189,7 +189,7 @@ RUN curl -sSL -o /tmp/flash_attn-2.7.4.post1-cp312-cp312-linux_x86_64.whl \
 # This is the same pattern Hunyuan3D-2 itself uses for its custom
 # rasterizer + renderer extensions — directory-on-PATH, not wheel.
 COPY vendors/Hunyuan3D-Part /opt/hunyuan3d-part
-# Three sed patches to upstream P3-SAM/model.py:
+# Four sed patches to upstream P3-SAM / XPart code:
 #
 # 1. ``from models import sonata`` → ``from partgen.models import sonata``
 #    (avoids collision with /app/models/, our app's pydantic package).
@@ -200,11 +200,26 @@ COPY vendors/Hunyuan3D-Part /opt/hunyuan3d-part
 #    loads from the pre-downloaded weight at /models/sonata/sonata.pth
 #    instead of pulling from HuggingFace on first request.  This keeps
 #    the runner offline-capable for the part pipeline.
+# 4. ``self.model_parallel = torch.nn.DataParallel(self.model)`` →
+#    ``self.model_parallel = self.model`` in the bbox predictor.
+#    Upstream wraps its YSAM segmenter in DataParallel for multi-GPU
+#    batch splitting, but DataParallel hardcodes cuda:0 as the
+#    primary device and expects all params there.  We do our own
+#    cross-GPU placement (see ``Hunyuan3DPartPipeline._load`` —
+#    AlignDevicesHook on the diffusion DiT), so DataParallel here
+#    just gets in the way and crashes with "module must have its
+#    parameters and buffers on device cuda:0 but found one on cuda:N".
+#    Aliasing to the raw model bypasses the wrapper without
+#    changing the call sites that reference ``model_parallel``.
 RUN sed -i \
         -e 's|^from models import sonata|from partgen.models import sonata|' \
         -e 's|^from utils\.misc import smart_load_model|from partgen.utils.misc import smart_load_model|' \
         -e 's|sonata\.load("sonata", repo_id="facebook/sonata"[^)]*)|sonata.load("/models/sonata/sonata.pth")|' \
-        /opt/hunyuan3d-part/P3-SAM/model.py
+        /opt/hunyuan3d-part/P3-SAM/model.py && \
+    sed -i 's|self\.model_parallel = torch\.nn\.DataParallel(self\.model)|self.model_parallel = self.model|' \
+        /opt/hunyuan3d-part/XPart/partgen/bbox_estimator/auto_mask_api.py \
+        /opt/hunyuan3d-part/P3-SAM/demo/auto_mask.py \
+        /opt/hunyuan3d-part/P3-SAM/demo/auto_mask_no_postprocess.py
 RUN cd /opt/hunyuan3d-part/P3-SAM/utils/chamfer3D && python setup.py install || \
     echo "WARN: chamfer3D build failed; P3-SAM will surface a clean error on first request"
 
