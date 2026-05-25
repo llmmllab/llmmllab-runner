@@ -123,5 +123,13 @@
     size: 884878856
     original_ctx: 0
     model_path: /models/rmbg-2.0
+  parameters:
+    # Hardware placement (read by ``pipelines/_gpu_select.py``):
+    # main_gpu: -1 means "auto-pick the freest CUDA device".  RMBG
+    # is tiny (~1.6 GB fp16) so it fits anywhere; we let the
+    # picker avoid piling on top of an LLM's KV cache when there's
+    # headroom elsewhere.  Set ``main_gpu: 0`` (or any specific
+    # index) to pin to a single card.
+    main_gpu: -1
   pipeline: rembg
   provider: in_process

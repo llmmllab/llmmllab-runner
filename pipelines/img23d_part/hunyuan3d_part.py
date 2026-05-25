@@ -141,74 +141,37 @@ class Hunyuan3DPartPipeline(InProcessPipeline):
         if self._model_path is None:
             self._model_path = self._resolve_model_path()
 
-        # XPart needs ~23 GB peak VRAM in a SINGLE-GPU layout: all
-        # submodules + diffusion workspace must fit on one card.  At the
-        # measured peak (~17 GB resident + 6 GB workspace) that's
-        # right at the edge of a 24 GB 3090 — one extra kernel
-        # allocation tips it over.  We instead **shard across two
-        # GPUs**: the diffusion DiT (``self.model`` — the 6 GB
-        # workspace consumer) gets its own card; the conditioner +
-        # VAE + P3-SAM stay together on a primary card.  Cross-card
-        # tensor transfer happens automatically via accelerate's
-        # AlignDevicesHook.
+        # XPart needs ~23 GB peak VRAM in a single-GPU layout, so we
+        # shard across two cards when available: the diffusion DiT
+        # (the 6 GB workspace consumer) gets its own card; the
+        # conditioner + VAE + P3-SAM stay together on the primary
+        # card.  Cross-card tensor transfer is handled by
+        # accelerate's AlignDevicesHook (applied to ``self._impl.model``
+        # further down).
         #
-        # The runner box has 1× 3060 (12 GB) + 2× 3090s (24 GB).  We
-        # need TWO cards with >= HUNYUAN3D_PART_MIN_VRAM_GB total
-        # (default 20).  3060 is excluded by the filter; the two
-        # 3090s become primary + secondary.
-        primary_device = "cpu"
-        secondary_device: Optional[str] = None
-        if torch.cuda.is_available():
-            min_total_bytes = int(
-                os.environ.get("HUNYUAN3D_PART_MIN_VRAM_GB", "20")
-            ) * 1024 ** 3
-            candidates: list[tuple[int, int]] = []  # (free, idx)
-            for i in range(torch.cuda.device_count()):
-                free, total = torch.cuda.mem_get_info(i)
-                if total < min_total_bytes:
-                    self._logger.debug(
-                        f"Skipping cuda:{i} ({total / 1024**3:.1f} GB total "
-                        f"< {min_total_bytes / 1024**3:.0f} GB floor)"
-                    )
-                    continue
-                candidates.append((free, i))
-            if not candidates:
-                raise RuntimeError(
-                    f"No CUDA device with >= "
-                    f"{min_total_bytes / 1024**3:.0f} GB total VRAM is "
-                    f"available; XPart needs at least one such card.  "
-                    f"Set HUNYUAN3D_PART_MIN_VRAM_GB lower if your "
-                    f"hardware genuinely has none."
-                )
-            # Sort by free VRAM descending → primary is the most free,
-            # secondary is next-most-free (or same as primary on
-            # single-card hosts).
-            candidates.sort(reverse=True)
-            primary_idx = candidates[0][1]
-            secondary_idx = candidates[1][1] if len(candidates) > 1 else primary_idx
-            primary_device = f"cuda:{primary_idx}"
-            secondary_device = f"cuda:{secondary_idx}"
-            # Pin torch's process-default cuda device to primary so
-            # any submodule that constructs tensors with bare ``cuda``
-            # (no explicit index) lands consistently — pre-empts the
-            # cross-GPU NCCL split error.
-            torch.cuda.set_device(primary_idx)
-            if primary_idx != secondary_idx:
-                self._logger.info(
-                    f"Sharding XPart across {primary_device} "
-                    f"(primary, {candidates[0][0] / 1024**3:.1f} GB free) "
-                    f"and {secondary_device} "
-                    f"(secondary, {candidates[1][0] / 1024**3:.1f} GB free); "
-                    f"default cuda device pinned to {primary_idx}"
-                )
-            else:
-                self._logger.info(
-                    f"Single-GPU layout on {primary_device} "
-                    f"({candidates[0][0] / 1024**3:.1f} GB free); "
-                    f"only one card meets the {min_total_bytes / 1024**3:.0f} "
-                    f"GB floor — no sharding available"
-                )
-        device = primary_device
+        # Device placement is yaml-driven via the shared
+        # ``pipelines._gpu_select`` helper — same path
+        # ``main_gpu`` / ``tensor_split`` plumbing as rembg + img23d.
+        from pipelines._gpu_select import pick_device, device_hints_from_model
+
+        try:
+            from utils.model_loader import ModelLoader
+            model = ModelLoader().get_model_by_id(self.model_id)
+        except Exception:
+            model = None
+        choice = pick_device(
+            **device_hints_from_model(model),
+            min_vram_gb=20.0,  # XPart needs at least one 24 GB-class card
+            logger=self._logger,
+        )
+        if not choice.primary.startswith("cuda"):
+            raise RuntimeError(
+                "No CUDA device meets XPart's 20 GB total-VRAM floor.  "
+                "Adjust ``main_gpu``/``tensor_split`` in .models.yaml's "
+                "``hunyuan3d-part`` entry or lower the floor in code."
+            )
+        device = choice.primary
+        secondary_device: Optional[str] = choice.secondary
 
         # Precision knob.  Default fp16 — applied SELECTIVELY:
         #

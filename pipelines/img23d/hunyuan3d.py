@@ -155,18 +155,29 @@ class Hunyuan3DPipeline(InProcessPipeline):
             use_safetensors=_USE_SAFETENSORS,
         )
 
-        # Move to CUDA when available.  Hunyuan3D's pipeline exposes
-        # ``.to(device)`` (it's a torch.nn.Module-ish wrapper); fall
-        # back to CPU if GPU placement throws — useful in dev envs
-        # without a GPU.
-        try:
-            import torch  # type: ignore[import-not-found]
+        # Hardware placement is yaml-driven via ``main_gpu`` and
+        # ``tensor_split`` on the model's ``parameters`` block (see
+        # ``pipelines/_gpu_select.py``).  Without that, the bare
+        # ``cuda`` default lands on cuda:0 which is the 3060 on this
+        # cluster — too small for Hunyuan3D-2.1 (~10-13 GB peak).
+        from pipelines._gpu_select import pick_device, device_hints_from_model
 
-            if torch.cuda.is_available():
-                self._impl.to("cuda")
+        try:
+            from utils.model_loader import ModelLoader
+            model = ModelLoader().get_model_by_id("hunyuan3d-2.1")
+        except Exception:
+            model = None
+        choice = pick_device(
+            **device_hints_from_model(model),
+            min_vram_gb=14.0,  # Hunyuan3D-2.1 needs ~10-13 GB peak
+            logger=self._logger,
+        )
+        try:
+            if choice.primary.startswith("cuda"):
+                self._impl.to(choice.primary)
         except Exception as e:  # noqa: BLE001
             self._logger.warning(
-                f"Could not move Hunyuan3D to CUDA ({e}); using CPU"
+                f"Could not move Hunyuan3D to {choice.primary} ({e}); using CPU"
             )
 
     async def _run(self, payload: Dict[str, Any]) -> Dict[str, Any]:

@@ -157,10 +157,27 @@ class RMBGPipeline(InProcessPipeline):
         )
         self._impl.eval()
 
+        # Hardware placement is yaml-driven (.models.yaml ``parameters``:
+        # ``main_gpu`` + ``tensor_split``).  RMBG is tiny (~1.6 GB
+        # fp16) so it fits anywhere; default ``main_gpu: -1`` picks
+        # the freest card and avoids piling on top of an LLM's KV
+        # cache when there's headroom elsewhere.
+        from pipelines._gpu_select import pick_device, device_hints_from_model
+
         try:
-            if torch.cuda.is_available():
-                self._device = "cuda"
-                self._impl.to("cuda")
+            from utils.model_loader import ModelLoader
+            model = ModelLoader().get_model_by_id(self.model_id)
+        except Exception:
+            model = None
+        choice = pick_device(
+            **device_hints_from_model(model),
+            min_vram_gb=2.0,  # RMBG fp16 ~1.6 GB + workspace
+            logger=self._logger,
+        )
+        try:
+            if choice.primary.startswith("cuda"):
+                self._device = choice.primary
+                self._impl.to(choice.primary)
                 # fp16, not bf16 — BiRefNet uses torchvision's deformable
                 # convolutions and ``deformable_im2col`` only got a bf16
                 # CUDA kernel in torchvision 0.21+.  This image pins to
@@ -170,9 +187,11 @@ class RMBGPipeline(InProcessPipeline):
                 # BiRefNet's recommended inference precision — ~2×
                 # throughput vs fp32 and half the VRAM.
                 self._impl.to(torch.float16)
+            else:
+                self._device = "cpu"
         except Exception as e:  # noqa: BLE001
             self._logger.warning(
-                f"Could not move RMBG to CUDA ({e}); using CPU"
+                f"Could not move RMBG to {choice.primary} ({e}); using CPU"
             )
             self._device = "cpu"
 

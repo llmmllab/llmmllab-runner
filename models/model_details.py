@@ -24,6 +24,21 @@ class ModelDetails(BaseModel):
         Field(default=None, description="Path to the GGUF file if applicable"),
     ] = None
     """Path to the GGUF file if applicable"""
+    model_path: Annotated[
+        Optional[str],
+        Field(
+            default=None,
+            description=(
+                "Filesystem path or HF repo id for in-process pipelines that don't "
+                "fit the gguf-per-component shape (e.g. rembg / img23d / "
+                "img23d_part).  Read by each pipeline's _resolve_model_path() on "
+                "first request.  Without this, ``ConfigDict(extra='ignore')`` "
+                "would silently drop the yaml field and the pipeline would 503 "
+                "with 'has no details.model_path set in .models.yaml'."
+            ),
+        ),
+    ] = None
+    """Filesystem path or HF repo id for in_process pipelines."""
     clip_model_path: Annotated[
         Optional[str],
         Field(

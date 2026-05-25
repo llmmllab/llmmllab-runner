@@ -483,6 +483,15 @@
     original_ctx: 0
     model_path: hunyuan3d
   parameters:
+    # Hardware placement (read by ``pipelines/_gpu_select.py``):
+    # ``main_gpu: -1`` auto-picks the freest CUDA device meeting
+    # the pipeline's 14 GB min_vram_gb floor — on this cluster that
+    # excludes the 3060 (12 GB) and lands on whichever 3090 is
+    # freer at load time.  ``tensor_split: "0,1,1"`` adds a
+    # belt-and-braces filter: even if the floor logic regresses,
+    # cuda:0 (the 3060) is explicitly disqualified.
+    main_gpu: -1
+    tensor_split: "0,1,1"
     # Hunyuan3D-2.1 has a tendency to add a flat "ghost platform"
     # under the subject — the SDF gets biased outside the zero
     # crossing by the pipeline's default ``mc_level=-1/512``, and
@@ -555,5 +564,16 @@
     size: 9491429340
     original_ctx: 0
     model_path: /models/hunyuan3d-part
+  parameters:
+    # Hardware placement.  XPart's working set is ~23 GB peak so
+    # it needs at least one 24 GB-class card, and benefits from
+    # sharding across two when available (DiT lands on the
+    # secondary via accelerate's AlignDevicesHook, see
+    # ``pipelines/img23d_part/hunyuan3d_part.py``).
+    # ``main_gpu: -1`` + ``tensor_split: "0,1,1"`` means: pick by
+    # free VRAM, but cuda:0 (the 3060 on this cluster, 12 GB) is
+    # not even a candidate.
+    main_gpu: -1
+    tensor_split: "0,1,1"
   pipeline: img23d_part
   provider: in_process
