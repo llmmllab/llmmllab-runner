@@ -265,6 +265,13 @@ class Hunyuan3DPartPipeline(InProcessPipeline):
                 f"Could not move Hunyuan3D-Part to {device} ({e}); using CPU"
             )
 
+        # XPart returns ``(out, None)`` for the debug tuple unless
+        # ``verbose=True``.  We want the bbox / exploded / gt_bbox
+        # outputs (the api wraps each with its own download URL), so
+        # flip the flag post-init.
+        if hasattr(self._impl, "verbose"):
+            self._impl.verbose = True
+
         # Selectively downcast the DiT (the 6.6 GB module).  XPart's
         # ``self.dtype`` is read by __call__ to cast DiT inputs just
         # before feeding the model — so we also update ``self.dtype``
