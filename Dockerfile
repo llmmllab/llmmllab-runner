@@ -189,7 +189,21 @@ RUN curl -sSL -o /tmp/flash_attn-2.7.4.post1-cp312-cp312-linux_x86_64.whl \
 # This is the same pattern Hunyuan3D-2 itself uses for its custom
 # rasterizer + renderer extensions — directory-on-PATH, not wheel.
 COPY vendors/Hunyuan3D-Part /opt/hunyuan3d-part
-RUN sed -i 's|^from models import sonata|from partgen.models import sonata|; s|^from utils\.misc import smart_load_model|from partgen.utils.misc import smart_load_model|' \
+# Three sed patches to upstream P3-SAM/model.py:
+#
+# 1. ``from models import sonata`` → ``from partgen.models import sonata``
+#    (avoids collision with /app/models/, our app's pydantic package).
+# 2. ``from utils.misc import ...`` → ``from partgen.utils.misc import ...``
+#    (same collision with /app/utils/).
+# 3. ``sonata.load("sonata", repo_id="facebook/sonata", ...)`` →
+#    ``sonata.load("/models/sonata/sonata.pth", ...)`` so the model
+#    loads from the pre-downloaded weight at /models/sonata/sonata.pth
+#    instead of pulling from HuggingFace on first request.  This keeps
+#    the runner offline-capable for the part pipeline.
+RUN sed -i \
+        -e 's|^from models import sonata|from partgen.models import sonata|' \
+        -e 's|^from utils\.misc import smart_load_model|from partgen.utils.misc import smart_load_model|' \
+        -e 's|sonata\.load("sonata", repo_id="facebook/sonata"[^)]*)|sonata.load("/models/sonata/sonata.pth")|' \
         /opt/hunyuan3d-part/P3-SAM/model.py
 RUN cd /opt/hunyuan3d-part/P3-SAM/utils/chamfer3D && python setup.py install || \
     echo "WARN: chamfer3D build failed; P3-SAM will surface a clean error on first request"

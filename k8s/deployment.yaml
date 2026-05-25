@@ -67,6 +67,22 @@ spec:
             # XPart nor P3-SAM ships a wheel — they're directory-on-PATH.
             - name: PYTHONPATH
               value: "/app:/opt/hunyuan3d-part/XPart:/opt/hunyuan3d-part/P3-SAM"
+            # Disable any HuggingFace Hub lookups at runtime.  All
+            # weights the in-process pipelines need (Hunyuan3D-2.1,
+            # RMBG-2.0, Hunyuan3D-Part, facebook/sonata) are
+            # pre-downloaded into /models on the host PVC.  If
+            # something does sneak through and try to contact HF the
+            # request fails fast rather than silently hitting the
+            # network and slowing the request.
+            - name: HF_HUB_OFFLINE
+              value: "1"
+            - name: TRANSFORMERS_OFFLINE
+              value: "1"
+            # Mitigate VRAM fragmentation for XPart's large fp32
+            # diffusion forward pass (~17 GB resident + 6 GB workspace
+            # on a 24 GB 3090 — leaves no room for fragmented gaps).
+            - name: PYTORCH_CUDA_ALLOC_CONF
+              value: "expandable_segments:True"
             - name: PYTHONUNBUFFERED
               value: "1"
             # Used by utils/dcgm_metrics.py to filter DCGM exporter scrapes
@@ -201,6 +217,22 @@ spec:
             # XPart nor P3-SAM ships a wheel — they're directory-on-PATH.
             - name: PYTHONPATH
               value: "/app:/opt/hunyuan3d-part/XPart:/opt/hunyuan3d-part/P3-SAM"
+            # Disable any HuggingFace Hub lookups at runtime.  All
+            # weights the in-process pipelines need (Hunyuan3D-2.1,
+            # RMBG-2.0, Hunyuan3D-Part, facebook/sonata) are
+            # pre-downloaded into /models on the host PVC.  If
+            # something does sneak through and try to contact HF the
+            # request fails fast rather than silently hitting the
+            # network and slowing the request.
+            - name: HF_HUB_OFFLINE
+              value: "1"
+            - name: TRANSFORMERS_OFFLINE
+              value: "1"
+            # Mitigate VRAM fragmentation for XPart's large fp32
+            # diffusion forward pass (~17 GB resident + 6 GB workspace
+            # on a 24 GB 3090 — leaves no room for fragmented gaps).
+            - name: PYTORCH_CUDA_ALLOC_CONF
+              value: "expandable_segments:True"
             - name: PYTHONUNBUFFERED
               value: "1"
             # Used by utils/dcgm_metrics.py to filter DCGM exporter scrapes
