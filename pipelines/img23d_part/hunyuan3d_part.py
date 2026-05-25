@@ -40,7 +40,7 @@ import binascii
 import os
 import time
 import uuid
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from config import SD_OUTPUT_DIR
 from models import ModelTask
@@ -450,6 +450,38 @@ class Hunyuan3DPartPipeline(InProcessPipeline):
         bbox_path = _try_export(out_bbox, bbox_path, "bbox")
         gt_bbox_path = _try_export(mesh_gt_bbox, gt_bbox_path, "gt_bbox")
 
+        # Optional per-part split.  XPart's ``obj_mesh`` is a
+        # ``trimesh.Scene`` with one Trimesh per detected part.
+        # When ``split=true`` is in the payload, write each geometry
+        # to its own ``<id>_part_NN.glb`` so the caller can import
+        # parts individually in Blender / three.js / Unity without
+        # an extra round-trip through trimesh.
+        part_paths: List[str] = []
+        if payload.get("split") and obj_mesh is not None:
+            try:
+                import trimesh  # noqa: WPS433 — local import keeps cold start fast
+                if isinstance(obj_mesh, trimesh.Scene):
+                    geometries = list(obj_mesh.geometry.values())
+                else:
+                    geometries = [obj_mesh]
+                for idx, geom in enumerate(geometries):
+                    part_path = os.path.join(
+                        _OUTPUT_DIR, f"{gen_id}_part_{idx:02d}.glb"
+                    )
+                    try:
+                        geom.export(part_path)
+                        part_paths.append(part_path)
+                    except Exception as e:  # noqa: BLE001
+                        self._logger.warning(
+                            f"Failed to export part {idx} of split "
+                            f"({e}); skipping"
+                        )
+            except Exception as e:  # noqa: BLE001
+                self._logger.warning(
+                    f"Split failed ({e}); only the assembled "
+                    f"decomposed.glb will be available"
+                )
+
         # If literally every output failed, the run is unusable —
         # surface a clean error.  Otherwise return whatever did work.
         if not any((mesh_path, exploded_path, bbox_path, gt_bbox_path)):
@@ -471,6 +503,7 @@ class Hunyuan3DPartPipeline(InProcessPipeline):
             "exploded_path": exploded_path,
             "bbox_path": bbox_path,
             "gt_bbox_path": gt_bbox_path,
+            "part_paths": part_paths,
         }
 
     async def unload(self) -> None:

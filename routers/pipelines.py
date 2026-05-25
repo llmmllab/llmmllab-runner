@@ -251,7 +251,7 @@ _IMG23D_PART_OUTPUT_DIR = os.environ.get(
 # known suffixes.  ``_input.glb`` is also matched so failed runs can
 # be retrieved for debugging.
 _IMG23D_PART_FILENAME_RE = re.compile(
-    r"^[A-Za-z0-9_-]{1,64}_(decomposed|exploded|bbox|gt_bbox|input)\.glb$"
+    r"^[A-Za-z0-9_-]{1,64}_(decomposed|exploded|bbox|gt_bbox|input|part_\d{2})\.glb$"
 )
 
 

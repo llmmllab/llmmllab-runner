@@ -160,13 +160,16 @@ def test_download_img23d_part_artifact_serves_decomposed(tmp_path, monkeypatch):
 
 
 def test_download_img23d_part_artifact_all_role_suffixes(tmp_path, monkeypatch):
-    """All five valid suffixes (decomposed/exploded/bbox/gt_bbox/input)
-    are served; everything else 400s."""
+    """All valid suffixes (decomposed/exploded/bbox/gt_bbox/input + the
+    ``part_NN`` split form) are served; everything else 400s."""
     monkeypatch.setattr(
         pipelines_router, "_IMG23D_PART_OUTPUT_DIR", str(tmp_path)
     )
 
-    for role in ("decomposed", "exploded", "bbox", "gt_bbox", "input"):
+    for role in (
+        "decomposed", "exploded", "bbox", "gt_bbox", "input",
+        "part_00", "part_01", "part_99",
+    ):
         f = tmp_path / f"abc_{role}.glb"
         f.write_bytes(b"x")
         resp = pipelines_router.download_img23d_part_artifact(f.name)
@@ -192,6 +195,10 @@ def test_download_img23d_part_artifact_rejects_traversal(tmp_path, monkeypatch):
         "",
         # Mismatched role labels — rejected.
         "abc_wrong.glb",
+        # Bad part-NN forms — exactly 2 digits required.
+        "abc_part_1.glb",
+        "abc_part_100.glb",
+        "abc_part_xx.glb",
         "abc_decompose.glb",
     ]:
         with pytest.raises(HTTPException) as exc:
