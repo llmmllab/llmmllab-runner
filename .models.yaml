@@ -496,15 +496,15 @@
     # - ``box_v: 1.0``       — drop the 1% bbox padding; the padded
     #   region was the other place where stray floor pixels got
     #   captured.
-    # - ``num_inference_steps: 30`` and ``hy3d_guidance_scale:
-    #   5.5`` are the pipeline-baked defaults restated here so
-    #   ops can tune from a single source of truth.
+    # - ``num_inference_steps: 30`` and ``guidance_scale: 5.5``
+    #   are the pipeline-baked defaults restated here so ops can
+    #   tune from a single source of truth.
     #
     # If a particular subject ends up with pinched / hollow
     # geometry (over-aggressive surface), nudge ``mc_level`` to
     # ``-0.001`` or ``box_v`` to ``1.005``.
     num_inference_steps: 30
-    hy3d_guidance_scale: 5.5
+    guidance_scale: 5.5
     octree_resolution: 512
     mc_level: 0.0
     box_v: 1.0

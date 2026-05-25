@@ -502,19 +502,20 @@ class ModelParameters(BaseModel):
     ] = None
     """Hunyuan3D diffusion steps."""
 
-    hy3d_guidance_scale: Annotated[
+    guidance_scale: Annotated[
         Optional[float],
         Field(
             default=None,
-            description="Hunyuan3D-2.1 classifier-free guidance scale (different from the "
-            "SD ``cfg_scale`` field — kept separate so per-model yamls don't have to "
-            "redeclare both for sd-server and Hunyuan3D entries).  Pipeline default "
-            "5.5.  Lower values (3-5) give cleaner geometry but less prompt fidelity; "
-            "higher (7-10) sharpens features at the cost of artefacts.",
+            description="Classifier-free guidance scale for diffusion-based 3D models "
+            "(Hunyuan3D-2.1, XPart, and future shape-diffusion backbones).  Distinct "
+            "from SD's ``cfg_scale`` field — that one maps to sd-server's wire-protocol "
+            "name; this one matches the diffusers / Hunyuan3D convention.  Pipeline "
+            "default 5.5.  Lower values (3-5) give cleaner geometry but less prompt "
+            "fidelity; higher (7-10) sharpens features at the cost of artefacts.",
             ge=0.0,
         ),
     ] = None
-    """Hunyuan3D-2.1 guidance_scale (separate from SD cfg_scale)."""
+    """Classifier-free guidance scale for 3D diffusion models (distinct from SD's cfg_scale)."""
 
     octree_resolution: Annotated[
         Optional[int],

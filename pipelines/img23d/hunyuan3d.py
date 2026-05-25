@@ -264,14 +264,6 @@ class Hunyuan3DPipeline(InProcessPipeline):
             val = _pick(field, cast)
             if val is not None:
                 kwargs[field] = val
-        # ``hy3d_guidance_scale`` in yaml aliases to
-        # ``guidance_scale`` at the pipeline call level (kept distinct
-        # in ModelParameters so the SD cfg_scale field can coexist
-        # without confusion).
-        if "guidance_scale" not in kwargs:
-            alias = _pick("hy3d_guidance_scale", float)
-            if alias is not None:
-                kwargs["guidance_scale"] = alias
 
         started = time.perf_counter()
         # Hunyuan3DDiTFlowMatchingPipeline returns a list of trimesh
