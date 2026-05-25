@@ -210,13 +210,20 @@ class Hunyuan3DPartPipeline(InProcessPipeline):
                 )
         device = primary_device
 
-        # Precision knob.  Default fp16 — 2× memory cut over fp32,
-        # comparable quality for transformer + VAE workloads, and
-        # spconv 2.x supports fp16 for its sparse conv ops.  Set
-        # ``HUNYUAN3D_PART_DTYPE=fp32`` if a specific submodule fails
-        # in fp16 (typically a sign of an unsupported sparse op or
-        # numerical overflow in a normalization layer) or set ``bf16``
-        # for the wider exponent at the cost of less precision.
+        # Precision knob.  Default fp16 — applied SELECTIVELY:
+        #
+        #   * DiT (``self.model``): cast to the chosen dtype.  This is
+        #     the 6.6 GB module and the biggest memory win.  Plain
+        #     transformer math, well-tested in fp16.
+        #   * VAE, conditioner, P3-SAM/bbox_predictor: stay in fp32.
+        #     The conditioner + P3-SAM contain Sonata which uses
+        #     ``spconv``'s implicit_gemm — spconv 2.x has fp16 kernels
+        #     for SOME shape configurations but not all, and our
+        #     Sonata config trips ``can't find suitable algorithm for
+        #     0`` in fp16.  Keeping them fp32 sidesteps the issue
+        #     entirely.  Cross-module dtype mismatch is handled by
+        #     XPart's __call__ which casts inputs to ``self.dtype``
+        #     just before feeding the DiT.
         dtype_env = os.environ.get("HUNYUAN3D_PART_DTYPE", "fp16").lower()
         dtype_map = {
             "fp32": torch.float32,
@@ -236,24 +243,46 @@ class Hunyuan3DPartPipeline(InProcessPipeline):
 
         self._logger.info(
             f"Loading Hunyuan3D-Part (XPart) from {self._model_path} "
-            f"in {dtype_env} on {device}"
+            f"in fp32 (DiT will downcast to {dtype_env}) on {device}"
         )
-        # XPart's ``smart_load_model`` joins HY3DGEN_MODELS + model_path.
-        # We pass an absolute path to make the resolution deterministic
-        # regardless of HY3DGEN_MODELS env value.
+        # Load EVERYTHING in fp32 first.  We selectively downcast the
+        # DiT below.  XPart's smart_load_model joins HY3DGEN_MODELS +
+        # model_path; we pass an absolute path so resolution is
+        # independent of the env value.
         self._impl = PartFormerPipeline.from_pretrained(
             model_path=self._model_path,
-            dtype=target_dtype,
+            dtype=torch.float32,
             device=device,
         )
 
         try:
             if device.startswith("cuda"):
-                self._impl.to(device=device, dtype=target_dtype)
+                # Move to device in fp32 (no dtype cast yet — see below
+                # for the selective DiT cast).
+                self._impl.to(device=device)
         except Exception as e:  # noqa: BLE001
             self._logger.warning(
                 f"Could not move Hunyuan3D-Part to {device} ({e}); using CPU"
             )
+
+        # Selectively downcast the DiT (the 6.6 GB module).  XPart's
+        # ``self.dtype`` is read by __call__ to cast DiT inputs just
+        # before feeding the model — so we also update ``self.dtype``
+        # to match the new DiT dtype, otherwise inputs stay fp32 and
+        # we get a mixed-dtype error inside the model forward.
+        if target_dtype != torch.float32 and hasattr(self._impl, "model"):
+            try:
+                self._impl.model = self._impl.model.to(dtype=target_dtype)
+                self._impl.dtype = target_dtype
+                self._logger.info(
+                    f"DiT downcast to {dtype_env}; conditioner + VAE + "
+                    f"P3-SAM kept in fp32 (spconv kernel coverage)"
+                )
+            except Exception as e:  # noqa: BLE001
+                self._logger.warning(
+                    f"Could not downcast DiT to {dtype_env} ({e}); "
+                    f"falling back to fp32"
+                )
 
         # Shard the diffusion DiT (``self.model``) onto the secondary
         # GPU when we have one.  This is the module that owns the
