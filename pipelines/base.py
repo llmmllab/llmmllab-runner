@@ -87,7 +87,15 @@ class InProcessPipeline(ABC):
         swallows the ``exc_info`` chain emitted by the surrounding
         router error handler, making CUDA OOM and similar failures
         nearly impossible to debug.
+
+        After :meth:`_run` completes (whether successfully or with an
+        error), if the env var ``IN_PROCESS_AUTO_UNLOAD`` is truthy,
+        unload the model immediately — the image / 3D pipelines on
+        this runner can be 6-20 GB resident and we don't keep them
+        warm between requests by default once auto-unload is on.
+        Subsequent requests pay the load cost again.
         """
+        import os
         import traceback as _tb
         if not self._loaded:
             async with self._load_lock:
@@ -105,6 +113,9 @@ class InProcessPipeline(ABC):
                         raise
                     self._loaded = True
                     self._logger.info(f"Pipeline {self.name} ready")
+        auto_unload = os.environ.get(
+            "IN_PROCESS_AUTO_UNLOAD", ""
+        ).lower() in ("1", "true", "yes", "on")
         try:
             return await self._run(payload)
         except Exception:
@@ -112,3 +123,16 @@ class InProcessPipeline(ABC):
                 f"Pipeline {self.name} run failed:\n{_tb.format_exc()}"
             )
             raise
+        finally:
+            if auto_unload:
+                try:
+                    self._logger.info(
+                        f"Auto-unloading pipeline {self.name} "
+                        f"(IN_PROCESS_AUTO_UNLOAD=1); next request will "
+                        f"pay the load cost again"
+                    )
+                    await self.unload()
+                except Exception as e:  # noqa: BLE001
+                    self._logger.warning(
+                        f"Auto-unload of {self.name} failed: {e}"
+                    )

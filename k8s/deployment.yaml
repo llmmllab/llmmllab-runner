@@ -143,6 +143,15 @@ spec:
               value: "http://nvidia-dcgm-exporter.gpu-operator.svc.cluster.local:9400/metrics"
             - name: SLOT_SAVE_DIR
               value: "/slots"
+            # In-process pipelines (rembg, img23d, img23d_part) are
+            # 6-20 GB resident.  Unload them after each request so
+            # other models (llama.cpp Qwen, SD diffusion) aren't
+            # crowded out of VRAM between turns.  Trade-off: each
+            # subsequent request pays the cold-start cost again
+            # (~5-30 s depending on pipeline).  Set to ``false`` if
+            # you're benchmarking back-to-back calls.
+            - name: IN_PROCESS_AUTO_UNLOAD
+              value: "true"
         # No DCGM exporter sidecar — Prometheus scrapes the
         # gpu-operator's nvidia-dcgm-exporter DaemonSet directly (see
         # k8s/prometheus-config.yaml) and Grafana panels query
@@ -295,6 +304,15 @@ spec:
               value: "http://nvidia-dcgm-exporter.gpu-operator.svc.cluster.local:9400/metrics"
             - name: SLOT_SAVE_DIR
               value: "/slots"
+            # In-process pipelines (rembg, img23d, img23d_part) are
+            # 6-20 GB resident.  Unload them after each request so
+            # other models (llama.cpp Qwen, SD diffusion) aren't
+            # crowded out of VRAM between turns.  Trade-off: each
+            # subsequent request pays the cold-start cost again
+            # (~5-30 s depending on pipeline).  Set to ``false`` if
+            # you're benchmarking back-to-back calls.
+            - name: IN_PROCESS_AUTO_UNLOAD
+              value: "true"
         # No DCGM exporter sidecar — Prometheus scrapes the
         # gpu-operator's nvidia-dcgm-exporter DaemonSet directly (see
         # k8s/prometheus-config.yaml) and Grafana panels query
