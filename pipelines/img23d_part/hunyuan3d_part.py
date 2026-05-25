@@ -420,17 +420,49 @@ class Hunyuan3DPartPipeline(InProcessPipeline):
             except OSError:
                 pass
 
-        # Persist all four outputs side-by-side so the api can serve
-        # whichever the caller asked for.
+        # Persist whichever outputs XPart actually produced.  When
+        # the diffusion VAE-decode + marching cubes fails on every
+        # part (e.g. SDF doesn't cross ``mc_level``, common on
+        # low-quality input meshes), ``obj_mesh`` is an empty Scene
+        # and trimesh raises ValueError("Can't export empty scenes!").
+        # Skip those export failures individually so the response
+        # still surfaces what *did* succeed (typically the bbox /
+        # gt_bbox views are non-empty even when the decomposed
+        # mesh isn't).
         mesh_path = os.path.join(_OUTPUT_DIR, f"{gen_id}_decomposed.glb")
         exploded_path = os.path.join(_OUTPUT_DIR, f"{gen_id}_exploded.glb")
         bbox_path = os.path.join(_OUTPUT_DIR, f"{gen_id}_bbox.glb")
         gt_bbox_path = os.path.join(_OUTPUT_DIR, f"{gen_id}_gt_bbox.glb")
 
-        obj_mesh.export(mesh_path)
-        explode_object.export(exploded_path)
-        out_bbox.export(bbox_path)
-        mesh_gt_bbox.export(gt_bbox_path)
+        def _try_export(scene: Any, path: str, label: str) -> Optional[str]:
+            try:
+                scene.export(path)
+                return path
+            except Exception as e:  # noqa: BLE001
+                self._logger.warning(
+                    f"XPart produced no usable {label} mesh for this "
+                    f"input ({e}); skipping export"
+                )
+                return None
+
+        mesh_path = _try_export(obj_mesh, mesh_path, "decomposed")
+        exploded_path = _try_export(explode_object, exploded_path, "exploded")
+        bbox_path = _try_export(out_bbox, bbox_path, "bbox")
+        gt_bbox_path = _try_export(mesh_gt_bbox, gt_bbox_path, "gt_bbox")
+
+        # If literally every output failed, the run is unusable —
+        # surface a clean error.  Otherwise return whatever did work.
+        if not any((mesh_path, exploded_path, bbox_path, gt_bbox_path)):
+            raise RuntimeError(
+                "Hunyuan3D-Part produced no exportable geometry for "
+                "this mesh.  XPart's VAE-decode + marching-cubes step "
+                "failed on every diffusion-produced part — typically "
+                "because the input mesh's surface complexity / scale "
+                "doesn't match what XPart was trained on (it prefers "
+                "AI-generated or scanned meshes from Hunyuan3D V2.5 "
+                "or V3.0).  Try a different input mesh or check the "
+                "runner logs for per-part export errors."
+            )
 
         return {
             "id": gen_id,
