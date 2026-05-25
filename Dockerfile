@@ -154,6 +154,16 @@ RUN python -m pip install --no-cache-dir kornia timm
 #                                   the torch wheel above)
 RUN python -m pip install --no-cache-dir \
     spconv-cu124 fpsample addict easydict scikit-learn
+
+# ``plyfile`` is trimesh's optional PLY backend.  Without it,
+# XPart's per-part marching-cubes export
+# (``trimesh.load(buf, format='ply')``) crashes with
+# ``Unknown format for load: ply`` and every diffusion-produced part
+# silently fails to materialise — the obj_mesh comes back as an
+# empty Scene even though P3-SAM segmentation + DiT diffusion both
+# succeeded.  Hunyuan3D-2's requirements.txt installs trimesh but
+# not plyfile, so add it explicitly.
+RUN python -m pip install --no-cache-dir plyfile
 RUN python -m pip install --no-cache-dir \
     torch_cluster torch_scatter \
     -f https://data.pyg.org/whl/torch-2.5.0+cu121.html || \
