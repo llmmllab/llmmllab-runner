@@ -141,23 +141,28 @@ class Hunyuan3DPartPipeline(InProcessPipeline):
         if self._model_path is None:
             self._model_path = self._resolve_model_path()
 
-        # XPart needs ~23 GB VRAM peak (~17 GB resident for all
-        # submodules + ~6 GB inference workspace).  The runner box has
-        # a mix of 3060 (12 GB) and 3090s (24 GB).  Pick by free VRAM
-        # but FILTER first on total capacity — a 3060 with 11 GB free
-        # is "freer" than a 3090 with 10 GB free, but XPart can't fit
-        # on a 3060 at all and would OOM at load time.
+        # XPart needs ~23 GB peak VRAM in a SINGLE-GPU layout: all
+        # submodules + diffusion workspace must fit on one card.  At the
+        # measured peak (~17 GB resident + 6 GB workspace) that's
+        # right at the edge of a 24 GB 3090 — one extra kernel
+        # allocation tips it over.  We instead **shard across two
+        # GPUs**: the diffusion DiT (``self.model`` — the 6 GB
+        # workspace consumer) gets its own card; the conditioner +
+        # VAE + P3-SAM stay together on a primary card.  Cross-card
+        # tensor transfer happens automatically via accelerate's
+        # AlignDevicesHook.
         #
-        # Tuning knob: ``HUNYUAN3D_PART_MIN_VRAM_GB`` (default 20) is
-        # the per-GPU floor.  Set lower if you have a custom card
-        # smaller than a 3090 but bigger than 12 GB.
-        device = "cpu"
+        # The runner box has 1× 3060 (12 GB) + 2× 3090s (24 GB).  We
+        # need TWO cards with >= HUNYUAN3D_PART_MIN_VRAM_GB total
+        # (default 20).  3060 is excluded by the filter; the two
+        # 3090s become primary + secondary.
+        primary_device = "cpu"
+        secondary_device: Optional[str] = None
         if torch.cuda.is_available():
             min_total_bytes = int(
                 os.environ.get("HUNYUAN3D_PART_MIN_VRAM_GB", "20")
             ) * 1024 ** 3
-            best_idx = -1
-            best_free = -1
+            candidates: list[tuple[int, int]] = []  # (free, idx)
             for i in range(torch.cuda.device_count()):
                 free, total = torch.cuda.mem_get_info(i)
                 if total < min_total_bytes:
@@ -166,31 +171,44 @@ class Hunyuan3DPartPipeline(InProcessPipeline):
                         f"< {min_total_bytes / 1024**3:.0f} GB floor)"
                     )
                     continue
-                if free > best_free:
-                    best_free = free
-                    best_idx = i
-            if best_idx < 0:
+                candidates.append((free, i))
+            if not candidates:
                 raise RuntimeError(
                     f"No CUDA device with >= "
                     f"{min_total_bytes / 1024**3:.0f} GB total VRAM is "
-                    f"available; XPart needs ~23 GB peak.  Set "
-                    f"HUNYUAN3D_PART_MIN_VRAM_GB lower if your hardware "
-                    f"genuinely has none."
+                    f"available; XPart needs at least one such card.  "
+                    f"Set HUNYUAN3D_PART_MIN_VRAM_GB lower if your "
+                    f"hardware genuinely has none."
                 )
-            device = f"cuda:{best_idx}"
-            # Also pin the process's default cuda device to ``best_idx``
-            # so any submodule that constructs tensors with bare
-            # ``cuda`` (no explicit index) lands on the same GPU.
-            # Without this, XPart's conditioner ends up on cuda:0
-            # while P3-SAM lands on best_idx and the first
-            # cross-module tensor op trips NCCL (multi-GPU transfer)
-            # with an "unhandled system error".
-            torch.cuda.set_device(best_idx)
-            self._logger.info(
-                f"Selected {device} for XPart "
-                f"({best_free / 1024**3:.1f} GB free); "
-                f"torch.cuda default device set to {best_idx}"
-            )
+            # Sort by free VRAM descending → primary is the most free,
+            # secondary is next-most-free (or same as primary on
+            # single-card hosts).
+            candidates.sort(reverse=True)
+            primary_idx = candidates[0][1]
+            secondary_idx = candidates[1][1] if len(candidates) > 1 else primary_idx
+            primary_device = f"cuda:{primary_idx}"
+            secondary_device = f"cuda:{secondary_idx}"
+            # Pin torch's process-default cuda device to primary so
+            # any submodule that constructs tensors with bare ``cuda``
+            # (no explicit index) lands consistently — pre-empts the
+            # cross-GPU NCCL split error.
+            torch.cuda.set_device(primary_idx)
+            if primary_idx != secondary_idx:
+                self._logger.info(
+                    f"Sharding XPart across {primary_device} "
+                    f"(primary, {candidates[0][0] / 1024**3:.1f} GB free) "
+                    f"and {secondary_device} "
+                    f"(secondary, {candidates[1][0] / 1024**3:.1f} GB free); "
+                    f"default cuda device pinned to {primary_idx}"
+                )
+            else:
+                self._logger.info(
+                    f"Single-GPU layout on {primary_device} "
+                    f"({candidates[0][0] / 1024**3:.1f} GB free); "
+                    f"only one card meets the {min_total_bytes / 1024**3:.0f} "
+                    f"GB floor — no sharding available"
+                )
+        device = primary_device
 
         self._logger.info(
             f"Loading Hunyuan3D-Part (XPart) from {self._model_path}"
@@ -214,6 +232,48 @@ class Hunyuan3DPartPipeline(InProcessPipeline):
             self._logger.warning(
                 f"Could not move Hunyuan3D-Part to {device} ({e}); using CPU"
             )
+
+        # Shard the diffusion DiT (``self.model``) onto the secondary
+        # GPU when we have one.  This is the module that owns the
+        # ~6 GB inference workspace allocation — putting it on its own
+        # card means it has 24 GB to play in instead of competing with
+        # the conditioner + VAE + P3-SAM (~17 GB resident) on a
+        # shared card.
+        #
+        # ``AlignDevicesHook`` from accelerate auto-transfers the
+        # forward call's args to ``execution_device`` before invoking
+        # the module and moves the output back to the primary device
+        # afterwards.  No XPart code change required.
+        if (
+            secondary_device is not None
+            and secondary_device != device
+            and self._impl is not None
+            and hasattr(self._impl, "model")
+        ):
+            try:
+                from accelerate.hooks import (  # type: ignore[import-not-found]
+                    AlignDevicesHook,
+                    add_hook_to_module,
+                )
+
+                self._impl.model.to(secondary_device)
+                hook = AlignDevicesHook(
+                    execution_device=torch.device(secondary_device),
+                    io_same_device=True,  # output goes back to caller's device
+                    offload=False,
+                )
+                add_hook_to_module(self._impl.model, hook)
+                self._logger.info(
+                    f"DiT submodule sharded onto {secondary_device} "
+                    f"with accelerate.AlignDevicesHook; cross-card "
+                    f"transfers handled by the hook"
+                )
+            except Exception as e:  # noqa: BLE001
+                self._logger.warning(
+                    f"Could not shard DiT to {secondary_device} "
+                    f"({e}); falling back to single-card layout"
+                )
+
         # Remember the chosen device so _run can move input tensors to it.
         self._device = device
 
