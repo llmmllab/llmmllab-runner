@@ -80,14 +80,35 @@ class InProcessPipeline(ABC):
     # ------------------------------------------------------------------
 
     async def run(self, payload: Dict[str, Any]) -> Dict[str, Any]:
-        """Load the model on first call, then delegate to :meth:`_run`."""
+        """Load the model on first call, then delegate to :meth:`_run`.
+
+        On exceptions (load or run), the full traceback is logged at
+        ERROR level — without this, structlog's default formatter
+        swallows the ``exc_info`` chain emitted by the surrounding
+        router error handler, making CUDA OOM and similar failures
+        nearly impossible to debug.
+        """
+        import traceback as _tb
         if not self._loaded:
             async with self._load_lock:
                 # Re-check inside the lock — another coroutine may have
                 # finished loading while we were waiting.
                 if not self._loaded:
                     self._logger.info(f"Loading pipeline {self.name}")
-                    await self._load()
+                    try:
+                        await self._load()
+                    except Exception:
+                        self._logger.error(
+                            f"Pipeline {self.name} load failed:\n"
+                            f"{_tb.format_exc()}"
+                        )
+                        raise
                     self._loaded = True
                     self._logger.info(f"Pipeline {self.name} ready")
-        return await self._run(payload)
+        try:
+            return await self._run(payload)
+        except Exception:
+            self._logger.error(
+                f"Pipeline {self.name} run failed:\n{_tb.format_exc()}"
+            )
+            raise

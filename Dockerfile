@@ -228,7 +228,18 @@ RUN sed -i \
     # on the demo workloads we've validated).  Tune higher if you
     # find part fidelity insufficient AND you have headroom.
     sed -i 's|num_points=81920|num_points=32768|' \
-        /opt/hunyuan3d-part/XPart/partgen/partformer_pipeline.py
+        /opt/hunyuan3d-part/XPart/partgen/partformer_pipeline.py && \
+    # P3-SAM's bbox predictor batches prompts at ``bs=64`` inside
+    # mesh_sam.  The resulting cat is ``[point_num=100000, K=64,
+    # 518] × 4 bytes ≈ 13 GB``, which OOMs even on a 24 GB 3090
+    # since the rest of the model is ~11 GB resident on that card.
+    # Drop bs to 16 (8× loop length, ~3.3 GB per cat — fits with
+    # comfortable headroom).  Bigger speedup loss than memory
+    # savings would suggest because PyTorch's CUDA stream
+    # batches kernels efficiently anyway; the bottleneck is the
+    # MLP forward, not the cat.
+    sed -i 's|^        bs = 64$|        bs = 16|' \
+        /opt/hunyuan3d-part/XPart/partgen/bbox_estimator/auto_mask_api.py
 RUN cd /opt/hunyuan3d-part/P3-SAM/utils/chamfer3D && python setup.py install || \
     echo "WARN: chamfer3D build failed; P3-SAM will surface a clean error on first request"
 

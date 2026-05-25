@@ -99,7 +99,10 @@ async def run_pipeline(name: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         raise HTTPException(status_code=400, detail=str(e)) from e
     except RuntimeError as e:
         # Loading failed — usually a missing optional dependency.
-        logger.error(f"Pipeline {name} failed to load: {e}")
+        logger.error(
+            f"Pipeline {name} failed to load: {e}",
+            exc_info=True,
+        )
         raise HTTPException(
             status_code=503,
             detail={
