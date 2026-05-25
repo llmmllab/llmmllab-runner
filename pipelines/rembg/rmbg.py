@@ -227,7 +227,14 @@ class RMBGPipeline(InProcessPipeline):
 
         started = time.perf_counter()
         input_tensor = self._transform(image).unsqueeze(0).to(self._device)  # type: ignore[union-attr]
-        if self._device == "cuda":
+        # Match model dtype.  ``self._device`` used to be the bare
+        # string ``"cuda"`` but the yaml-driven picker now hands us
+        # ``"cuda:1"`` etc., so we check the prefix instead of equality.
+        # Without this fp16 cast the input stays fp32 while the model
+        # is fp16 and pytorch raises
+        # ``RuntimeError: Input type (float) and bias type (c10::Half)
+        # should be the same``.
+        if self._device.startswith("cuda"):
             input_tensor = input_tensor.to(torch.float16)
 
         with torch.no_grad():
