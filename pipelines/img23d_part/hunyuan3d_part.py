@@ -272,6 +272,14 @@ class Hunyuan3DPartPipeline(InProcessPipeline):
         if hasattr(self._impl, "verbose"):
             self._impl.verbose = True
 
+        # XPart's __call__ reads ``self.dtype`` (line 588 of
+        # partformer_pipeline.py).  ``from_pretrained`` doesn't set
+        # it on the instance — it's expected to be assigned by the
+        # caller via ``.to(dtype=)``.  Since we call ``.to`` without
+        # a dtype above (in fp32 mode), the attribute never exists.
+        # Set it explicitly to keep the upstream code path happy.
+        self._impl.dtype = target_dtype
+
         # Selectively downcast the DiT (the 6.6 GB module).  XPart's
         # ``self.dtype`` is read by __call__ to cast DiT inputs just
         # before feeding the model — so we also update ``self.dtype``
