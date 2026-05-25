@@ -157,9 +157,18 @@ class Hunyuan3DPartPipeline(InProcessPipeline):
                     best_free = free
                     best_idx = i
             device = f"cuda:{best_idx}"
+            # Also pin the process's default cuda device to ``best_idx``
+            # so any submodule that constructs tensors with bare
+            # ``cuda`` (no explicit index) lands on the same GPU.  Without
+            # this, XPart's conditioner ends up on cuda:0 while
+            # P3-SAM lands on best_idx and the first cross-module
+            # tensor op trips NCCL (multi-GPU transfer) with an
+            # "unhandled system error".
+            torch.cuda.set_device(best_idx)
             self._logger.info(
                 f"Selected {device} for XPart "
-                f"({best_free / 1024**3:.1f} GB free)"
+                f"({best_free / 1024**3:.1f} GB free); "
+                f"torch.cuda default device set to {best_idx}"
             )
 
         self._logger.info(
