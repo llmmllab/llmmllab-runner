@@ -69,21 +69,13 @@ _DEFAULT_OCTREE_RESOLUTION = int(
     os.environ.get("HUNYUAN3D_PART_OCTREE_RESOLUTION", "512")
 )
 
-# Hard cap on the number of parts the conditioner has to attend over.
-# The cross-attention activation scales as roughly ``K * N_per_part *
-# hidden_dim`` where ``N_per_part`` is the hardcoded 81920 surface
-# sample count.  Measured peaks on a 24 GB 3090:
-#
-#   K=6   → ~3 GB activation, fits comfortably
-#   K=8   → ~4 GB,            fits with headroom for VAE + DiT residue
-#   K=16  → ~8 GB,            OOMs (17.8 GB resident + 8.1 GB alloc)
-#   K=25  → ~12 GB,           OOMs hard
-#
-# Default cap at 8 — preserves the 6-10 part range that real
-# Hunyuan3D-2.1 outputs produce while clipping pathological fixture
-# meshes that detect 20-50 parts.  Override via env if you have more
-# headroom; set to 0 to disable.
-_DEFAULT_MAX_PARTS = int(os.environ.get("HUNYUAN3D_PART_MAX_PARTS", "8"))
+# Optional cap on the number of parts the conditioner attends over.
+# Default disabled (0) — the pipeline now handles arbitrary K via a
+# combination of fp16-weight casts on conditioner + VAE, autocast
+# disabled inside the conditioner (keeps layer_norm in fp16), and
+# bbox_predictor sharded onto its own GPU.  Set to a positive integer
+# to cap anyway (kept for callers with even tighter VRAM budgets).
+_DEFAULT_MAX_PARTS = int(os.environ.get("HUNYUAN3D_PART_MAX_PARTS", "0"))
 
 
 _INSTALL_HINT = (
@@ -260,23 +252,39 @@ class Hunyuan3DPartPipeline(InProcessPipeline):
         # Set it explicitly to keep the upstream code path happy.
         self._impl.dtype = target_dtype
 
-        # Selectively downcast the DiT (the 6.6 GB module).  XPart's
-        # ``self.dtype`` is read by __call__ to cast DiT inputs just
-        # before feeding the model — so we also update ``self.dtype``
-        # to match the new DiT dtype, otherwise inputs stay fp32 and
-        # we get a mixed-dtype error inside the model forward.
-        if target_dtype != torch.float32 and hasattr(self._impl, "model"):
-            try:
-                self._impl.model = self._impl.model.to(dtype=target_dtype)
+        # Aggressive downcast: DiT, conditioner, AND VAE go to fp16.
+        # bbox_predictor stays fp32 — it's the only submodule that
+        # contains Sonata, which uses spconv kernels with patchy fp16
+        # coverage (``grep -rl 'import spconv' /opt/hunyuan3d-part``
+        # only finds ``models/sonata/``; the conditioner / VAE /
+        # DiT are pure-pytorch transformer math with mature fp16
+        # support).
+        #
+        # The conditioner cast is critical for handling high-K
+        # meshes — its cross-attention layer_norm dominates the
+        # activation budget at ~8 GB fp32 / ~4 GB fp16 on a K=25
+        # input.  See the autocast-disable trick further down in
+        # ``_run`` which keeps layer_norm from re-promoting to fp32
+        # mid-forward.
+        if target_dtype != torch.float32:
+            downcast = []
+            for attr in ("model", "conditioner", "vae"):
+                submod = getattr(self._impl, attr, None)
+                if submod is None:
+                    continue
+                try:
+                    setattr(self._impl, attr, submod.to(dtype=target_dtype))
+                    downcast.append(attr)
+                except Exception as e:  # noqa: BLE001
+                    self._logger.warning(
+                        f"Could not downcast {attr} to {dtype_env} ({e}); "
+                        f"leaving fp32"
+                    )
+            if downcast:
                 self._impl.dtype = target_dtype
                 self._logger.info(
-                    f"DiT downcast to {dtype_env}; conditioner + VAE + "
-                    f"P3-SAM kept in fp32 (spconv kernel coverage)"
-                )
-            except Exception as e:  # noqa: BLE001
-                self._logger.warning(
-                    f"Could not downcast DiT to {dtype_env} ({e}); "
-                    f"falling back to fp32"
+                    f"Downcast to {dtype_env}: {', '.join(downcast)}; "
+                    f"bbox_predictor kept fp32 (spconv coverage)"
                 )
 
         # Shard the diffusion DiT (``self.model``) onto the secondary
@@ -319,6 +327,120 @@ class Hunyuan3DPartPipeline(InProcessPipeline):
                     f"Could not shard DiT to {secondary_device} "
                     f"({e}); falling back to single-card layout"
                 )
+
+        # Move the bbox_predictor onto a *third* GPU when one's
+        # available.  The conditioner's cross-attention activation
+        # dominates primary's working set; freeing the
+        # ~3-5 GB occupied by bbox_predictor (P3-SAM + Sonata)
+        # gives the conditioner enough room for arbitrary K parts
+        # instead of needing the K-cap workaround.
+        #
+        # We deliberately pick a *different* device than primary +
+        # secondary even if it's smaller (e.g. the 3060), because
+        # bbox_predictor's resident footprint is small.  Sonata's
+        # internal ``.cuda()`` calls (with no index) require the
+        # global default device to be the bbox card while
+        # predict_bbox is executing — handled by wrapping the call
+        # in ``torch.cuda.device(N)`` inside ``_run``.
+        self._bbox_device: Optional[str] = None
+        bp = getattr(self._impl, "bbox_predictor", None)
+        if bp is not None:
+            # Build a list of candidate cards distinct from primary
+            # + secondary, ranked by free VRAM.  Falls back to
+            # primary if no other card is available.
+            other_idx: Optional[int] = None
+            try:
+                primary_idx = int(device.split(":")[1])
+                secondary_idx = (
+                    int(secondary_device.split(":")[1])
+                    if secondary_device is not None else None
+                )
+                free_list = []
+                for i in range(torch.cuda.device_count()):
+                    if i == primary_idx or i == secondary_idx:
+                        continue
+                    free, _t = torch.cuda.mem_get_info(i)
+                    free_list.append((free, i))
+                if free_list:
+                    free_list.sort(reverse=True)
+                    other_idx = free_list[0][1]
+            except Exception:  # noqa: BLE001
+                other_idx = None
+
+            if other_idx is not None:
+                target = f"cuda:{other_idx}"
+                try:
+                    # AutoMask holds ``.model`` (and an alias
+                    # ``.model_parallel`` that points at the same
+                    # object).  Move the underlying model — the
+                    # alias follows.
+                    if hasattr(bp, "model"):
+                        bp.model.to(target)
+                        bp.model_parallel = bp.model
+                    self._bbox_device = target
+
+                    # Permanently wrap predict_aabb so every caller
+                    # (our pre-bbox cap, XPart's internal __call__)
+                    # runs the bare ``.cuda()`` calls inside
+                    # auto_mask_api against the right card.  Without
+                    # this, the internal calls default to whatever
+                    # ``torch.cuda.current_device()`` is at call
+                    # time — which is the conditioner card.
+                    _orig_predict_aabb = bp.predict_aabb
+                    _target_idx = other_idx
+
+                    def _predict_aabb_on_dedicated_gpu(*a, **kw):
+                        with torch.cuda.device(_target_idx), \
+                             torch.autocast(device_type="cuda", enabled=False):
+                            return _orig_predict_aabb(*a, **kw)
+
+                    bp.predict_aabb = _predict_aabb_on_dedicated_gpu
+                    self._logger.info(
+                        f"bbox_predictor sharded onto {target} "
+                        f"(separate from conditioner/VAE on {device}); "
+                        f"predict_aabb wrapped in cuda.device "
+                        f"+ autocast(False) for spconv kernel coverage"
+                    )
+                except Exception as e:  # noqa: BLE001
+                    self._logger.warning(
+                        f"Could not move bbox_predictor to {target} "
+                        f"({e}); leaving on primary"
+                    )
+
+        # Wrap the conditioner forward to keep autocast disabled and
+        # ensure inputs land in the target dtype.  Under the outer
+        # ``@torch.autocast('cuda', dtype=torch.bfloat16)`` decorator
+        # on XPart's ``__call__``, layer_norm operates in fp32 even
+        # though the surrounding ops are bf16 — which doubles the
+        # conditioner's intermediate activations and was the OOM
+        # driver on high-K inputs.  Disabling autocast inside the
+        # conditioner keeps layer_norm in the same fp16 dtype as
+        # the weights.
+        cond = getattr(self._impl, "conditioner", None)
+        if cond is not None and target_dtype != torch.float32:
+            _orig_cond_forward = cond.forward
+
+            def _cond_forward_no_autocast(*args, **kw):
+                # Cast positional + kwarg tensors to the conditioner's
+                # weight dtype so layer_norm input/output stay in fp16
+                # throughout.  Non-tensor args pass through unchanged.
+                cast_args = tuple(
+                    a.to(dtype=target_dtype) if isinstance(a, torch.Tensor) else a
+                    for a in args
+                )
+                cast_kw = {
+                    k: (v.to(dtype=target_dtype) if isinstance(v, torch.Tensor) else v)
+                    for k, v in kw.items()
+                }
+                with torch.autocast(device_type="cuda", enabled=False):
+                    return _orig_cond_forward(*cast_args, **cast_kw)
+
+            cond.forward = _cond_forward_no_autocast
+            self._logger.info(
+                "Conditioner forward wrapped: inputs cast to "
+                f"{dtype_env} + autocast disabled inside (keeps "
+                f"layer_norm at {dtype_env} to halve activation peak)"
+            )
 
         # Remember the chosen device so _run can move input tensors to it.
         self._device = device
@@ -411,6 +533,9 @@ class Hunyuan3DPartPipeline(InProcessPipeline):
                 import trimesh  # local — keeps cold start fast
 
                 _mesh_in = trimesh.load(input_path, force="mesh")
+                # bbox_predictor.predict_aabb is already wrapped in a
+                # cuda.device context at load time, so this call
+                # lands on the right card regardless of caller.
                 aabb = self._impl.predict_bbox(  # type: ignore[union-attr]
                     _mesh_in, seed=seed
                 )
