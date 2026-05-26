@@ -252,23 +252,27 @@ class Hunyuan3DPartPipeline(InProcessPipeline):
         # Set it explicitly to keep the upstream code path happy.
         self._impl.dtype = target_dtype
 
-        # Aggressive downcast: DiT, conditioner, AND VAE go to fp16.
-        # bbox_predictor stays fp32 — it's the only submodule that
-        # contains Sonata, which uses spconv kernels with patchy fp16
-        # coverage (``grep -rl 'import spconv' /opt/hunyuan3d-part``
-        # only finds ``models/sonata/``; the conditioner / VAE /
-        # DiT are pure-pytorch transformer math with mature fp16
-        # support).
+        # Aggressive downcast: DiT, conditioner sub-modules (except
+        # the Sonata-based seg_feat_encoder), and VAE all go to
+        # fp16.  Sonata uses spconv kernels with gappy fp16 coverage
+        # — ``grep -rl 'import spconv'`` finds it in BOTH
+        # ``models/sonata/`` and the conditioner's
+        # ``conditioner/sonata_extractor.py``, so naively casting
+        # the whole conditioner breaks spconv's implicit_gemm
+        # autotuner with "can't find suitable algorithm".
         #
-        # The conditioner cast is critical for handling high-K
-        # meshes — its cross-attention layer_norm dominates the
-        # activation budget at ~8 GB fp32 / ~4 GB fp16 on a K=25
-        # input.  See the autocast-disable trick further down in
-        # ``_run`` which keeps layer_norm from re-promoting to fp32
-        # mid-forward.
+        # We cast the conditioner's children selectively:
+        #   * ``geo_encoder`` (PartEncoder)   → fp16
+        #   * ``obj_encoder`` (VolumeDecoderShapeVAE) → fp16
+        #   * ``geo_out_proj`` / ``obj_out_proj`` / ``seg_feat_outproj``
+        #     (Linear projections) → fp16
+        #   * ``seg_feat_encoder`` (SonataFeatureExtractor) → stays fp32
+        # bbox_predictor (P3-SAM + Sonata) also stays fp32 for the
+        # same reason.
         if target_dtype != torch.float32:
-            downcast = []
-            for attr in ("model", "conditioner", "vae"):
+            downcast: list[str] = []
+            # DiT + VAE: cast the whole module.
+            for attr in ("model", "vae"):
                 submod = getattr(self._impl, attr, None)
                 if submod is None:
                     continue
@@ -280,11 +284,36 @@ class Hunyuan3DPartPipeline(InProcessPipeline):
                         f"Could not downcast {attr} to {dtype_env} ({e}); "
                         f"leaving fp32"
                     )
+            # Conditioner: cast individual children, skipping the
+            # Sonata extractor.
+            cond = getattr(self._impl, "conditioner", None)
+            if cond is not None:
+                cond_cast: list[str] = []
+                for child_name in (
+                    "geo_encoder",
+                    "obj_encoder",
+                    "geo_out_proj",
+                    "obj_out_proj",
+                ):
+                    child = getattr(cond, child_name, None)
+                    if child is None:
+                        continue
+                    try:
+                        setattr(cond, child_name, child.to(dtype=target_dtype))
+                        cond_cast.append(child_name)
+                    except Exception as e:  # noqa: BLE001
+                        self._logger.warning(
+                            f"Could not downcast conditioner.{child_name} "
+                            f"to {dtype_env} ({e}); leaving fp32"
+                        )
+                if cond_cast:
+                    downcast.append("conditioner({" + ",".join(cond_cast) + "})")
             if downcast:
                 self._impl.dtype = target_dtype
                 self._logger.info(
                     f"Downcast to {dtype_env}: {', '.join(downcast)}; "
-                    f"bbox_predictor kept fp32 (spconv coverage)"
+                    f"seg_feat_encoder + bbox_predictor kept fp32 "
+                    f"(spconv kernel coverage)"
                 )
 
         # Shard the diffusion DiT (``self.model``) onto the secondary
