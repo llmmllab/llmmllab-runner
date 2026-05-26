@@ -812,6 +812,41 @@ class Hunyuan3DPartPipeline(InProcessPipeline):
                             delattr(mod, attr)
                     except Exception:  # noqa: BLE001
                         pass
+
+                # Nuclear option: replace each parameter's storage
+                # with an empty tensor.  We've tried removing the
+                # accelerate hook, deleting the resulting
+                # instance-level forward bound method, dropping
+                # ``self._hooked_modules`` + ``self._impl`` and
+                # running ``gc.collect()`` twice — and the
+                # 6-7 GB of DiT weights on the sharded card STILL
+                # stay resident.  Some ref chain we haven't found
+                # keeps the module reachable; rather than chase
+                # it we just rip the storage out from under the
+                # parameters.  ``p.data = empty`` drops the
+                # original tensor's storage refcount to zero
+                # (assuming we held the only ref to that storage,
+                # which we do for sharded DiT weights), and the
+                # next empty_cache reclaims the cuda blocks.
+                try:
+                    import torch  # type: ignore[import-not-found]
+
+                    for p in list(mod.parameters()):
+                        try:
+                            p.data = torch.empty(
+                                0, dtype=p.dtype, device="cpu"
+                            )
+                        except Exception:  # noqa: BLE001
+                            pass
+                    for b in list(mod.buffers()):
+                        try:
+                            b.data = torch.empty(
+                                0, dtype=b.dtype, device="cpu"
+                            )
+                        except Exception:  # noqa: BLE001
+                            pass
+                except Exception:  # noqa: BLE001
+                    pass
         except Exception:  # noqa: BLE001
             pass
         self._hooked_modules = []
