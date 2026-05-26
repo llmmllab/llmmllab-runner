@@ -776,9 +776,15 @@ class Hunyuan3DPartPipeline(InProcessPipeline):
         self._forward_hook_handles = []
 
         # 4. Remove accelerate AlignDevicesHook from each module we
-        # attached one to.  The hook keeps a strong ref to the
-        # module's parameters via ``weights_map``; without removal
-        # the weights survive even after the parent pipeline is None.
+        # attached one to, AND move its parameters to CPU.  Removing
+        # the hook alone is not enough — accelerate leaves the
+        # weights wherever they were last placed (cuda:N for our
+        # shard layout with offload=False), and ``self._impl =
+        # None`` below isn't sufficient to drop them because some
+        # ref chain inside accelerate's bookkeeping keeps the
+        # parameters reachable.  Explicitly ``.to("cpu")`` forces
+        # the parameter storages off cuda and lets the next
+        # ``empty_cache`` release the freed blocks.
         try:
             from accelerate.hooks import (  # type: ignore[import-not-found]
                 remove_hook_from_module,
@@ -789,11 +795,41 @@ class Hunyuan3DPartPipeline(InProcessPipeline):
                     remove_hook_from_module(mod)
                 except Exception:  # noqa: BLE001
                     pass
+                try:
+                    mod.to("cpu")
+                except Exception:  # noqa: BLE001
+                    pass
         except Exception:  # noqa: BLE001
             pass
         self._hooked_modules = []
 
-        # 5. Now safe to drop the pipeline.  ``super().unload`` runs
+        # 5. Best-effort: move ANY remaining submodule we touched
+        # (conditioner sub-modules, vae) back to CPU before nulling
+        # the pipeline.  Same reasoning as (4) — explicit ``.to("cpu")``
+        # frees the cuda storages reliably; gc + empty_cache alone
+        # leave them pooled.
+        if self._impl is not None:
+            for path in (
+                "vae",
+                "conditioner.geo_encoder",
+                "conditioner.obj_encoder",
+                "conditioner.seg_feat_encoder",
+                "conditioner.geo_out_proj",
+                "conditioner.obj_out_proj",
+                "bbox_predictor.model",
+            ):
+                try:
+                    obj = self._impl
+                    for piece in path.split("."):
+                        obj = getattr(obj, piece, None)
+                        if obj is None:
+                            break
+                    if obj is not None and hasattr(obj, "to"):
+                        obj.to("cpu")
+                except Exception:  # noqa: BLE001
+                    pass
+
+        # 6. Now safe to drop the pipeline.  ``super().unload`` runs
         # gc.collect + synchronize + empty_cache + ipc_collect via
         # ``HardwareManager.release_vram``.
         self._impl = None
