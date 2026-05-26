@@ -367,6 +367,75 @@ class Hunyuan3DPartPipeline(InProcessPipeline):
         # fp16 cast + autocast disable below.
         self._bbox_device: Optional[str] = None
 
+        # Shard the conditioner's ``geo_encoder`` onto the freest
+        # remaining GPU (typically the 3060 / cuda:0 which is
+        # otherwise idle for this pipeline).  The geo_encoder is the
+        # cross-attention block whose activation tensor scales as
+        # ``K * N_per_part * hidden_dim`` and dominates the
+        # conditioner's working set — at K=25 with N=81920 the
+        # layer_norm output is ~4 GB fp16, the residual stream is
+        # the same, and several blocks pipeline together push the
+        # peak past what fits alongside the other submodules on the
+        # primary card.  Moving it off primary recovers that
+        # headroom for free.
+        #
+        # ``AlignDevicesHook`` moves the call's inputs to
+        # ``execution_device`` before the forward and returns the
+        # output back to the caller's device after — same trick we
+        # already use for the DiT.  geo_encoder is pure-pytorch
+        # (no spconv), so this doesn't hit the autotuner issue that
+        # killed the bbox_predictor relocation.
+        if (
+            self._impl is not None
+            and getattr(self._impl, "conditioner", None) is not None
+            and getattr(self._impl.conditioner, "geo_encoder", None) is not None
+        ):
+            # Pick the freest CUDA device that's neither primary nor
+            # secondary.  Falls back to None (no relocation) when
+            # only two GPUs meet the picker constraints.
+            geo_target_idx: Optional[int] = None
+            try:
+                primary_idx = int(device.split(":")[1])
+                secondary_idx = (
+                    int(secondary_device.split(":")[1])
+                    if secondary_device is not None else None
+                )
+                cands: list[tuple[int, int]] = []
+                for i in range(torch.cuda.device_count()):
+                    if i == primary_idx or i == secondary_idx:
+                        continue
+                    free, _t = torch.cuda.mem_get_info(i)
+                    cands.append((free, i))
+                if cands:
+                    cands.sort(reverse=True)
+                    geo_target_idx = cands[0][1]
+            except Exception:  # noqa: BLE001
+                geo_target_idx = None
+
+            if geo_target_idx is not None:
+                geo_target = f"cuda:{geo_target_idx}"
+                try:
+                    self._impl.conditioner.geo_encoder.to(geo_target)
+                    hook = AlignDevicesHook(
+                        execution_device=torch.device(geo_target),
+                        io_same_device=True,
+                        offload=False,
+                    )
+                    add_hook_to_module(
+                        self._impl.conditioner.geo_encoder, hook
+                    )
+                    self._logger.info(
+                        f"conditioner.geo_encoder sharded onto "
+                        f"{geo_target} via AlignDevicesHook "
+                        f"(frees primary {device} of the cross-attention "
+                        f"activation peak — ~4-6 GB at K=25)"
+                    )
+                except Exception as e:  # noqa: BLE001
+                    self._logger.warning(
+                        f"Could not shard conditioner.geo_encoder to "
+                        f"{geo_target} ({e}); leaving on primary"
+                    )
+
         # Wrap the conditioner forward to keep autocast disabled and
         # ensure inputs land in the target dtype.  Under the outer
         # ``@torch.autocast('cuda', dtype=torch.bfloat16)`` decorator
