@@ -415,6 +415,11 @@ class Hunyuan3DPartPipeline(InProcessPipeline):
             if geo_target_idx is not None:
                 geo_target = f"cuda:{geo_target_idx}"
                 try:
+                    from accelerate.hooks import (  # type: ignore[import-not-found]
+                        AlignDevicesHook,
+                        add_hook_to_module,
+                    )
+
                     self._impl.conditioner.geo_encoder.to(geo_target)
                     hook = AlignDevicesHook(
                         execution_device=torch.device(geo_target),
