@@ -367,79 +367,39 @@ class Hunyuan3DPartPipeline(InProcessPipeline):
         # fp16 cast + autocast disable below.
         self._bbox_device: Optional[str] = None
 
-        # Shard the conditioner's ``geo_encoder`` onto the freest
-        # remaining GPU (typically the 3060 / cuda:0 which is
-        # otherwise idle for this pipeline).  The geo_encoder is the
-        # cross-attention block whose activation tensor scales as
-        # ``K * N_per_part * hidden_dim`` and dominates the
-        # conditioner's working set — at K=25 with N=81920 the
-        # layer_norm output is ~4 GB fp16, the residual stream is
-        # the same, and several blocks pipeline together push the
-        # peak past what fits alongside the other submodules on the
-        # primary card.  Moving it off primary recovers that
-        # headroom for free.
-        #
-        # ``AlignDevicesHook`` moves the call's inputs to
-        # ``execution_device`` before the forward and returns the
-        # output back to the caller's device after — same trick we
-        # already use for the DiT.  geo_encoder is pure-pytorch
-        # (no spconv), so this doesn't hit the autotuner issue that
-        # killed the bbox_predictor relocation.
-        if (
-            self._impl is not None
-            and getattr(self._impl, "conditioner", None) is not None
-            and getattr(self._impl.conditioner, "geo_encoder", None) is not None
-        ):
-            # Pick the freest CUDA device that's neither primary nor
-            # secondary.  Falls back to None (no relocation) when
-            # only two GPUs meet the picker constraints.
-            geo_target_idx: Optional[int] = None
-            try:
-                primary_idx = int(device.split(":")[1])
-                secondary_idx = (
-                    int(secondary_device.split(":")[1])
-                    if secondary_device is not None else None
-                )
-                cands: list[tuple[int, int]] = []
-                for i in range(torch.cuda.device_count()):
-                    if i == primary_idx or i == secondary_idx:
-                        continue
-                    free, _t = torch.cuda.mem_get_info(i)
-                    cands.append((free, i))
-                if cands:
-                    cands.sort(reverse=True)
-                    geo_target_idx = cands[0][1]
-            except Exception:  # noqa: BLE001
-                geo_target_idx = None
+        # Earlier attempt sharded conditioner.geo_encoder onto cuda:0
+        # (the 3060) to free primary's working set.  In practice the
+        # cross-attention activation at K=25 is ~7.5 GB and the 12 GB
+        # 3060 can't hold it — moved the OOM rather than fixing it.
+        # geo_encoder stays on primary; the empty_cache hooks below
+        # plus the predict_bbox post-flush handle the resident peak.
 
-            if geo_target_idx is not None:
-                geo_target = f"cuda:{geo_target_idx}"
+        # Wrap bbox_predictor.predict_aabb so the Sonata workspace
+        # (~3-5 GB cached) gets released before encode_cond runs.
+        # XPart calls predict_bbox inside check_inputs and then
+        # immediately enters encode_cond — without this flush, the
+        # bbox workspace sits in PyTorch's allocator pool alongside
+        # the conditioner's cross-attention activation, and the sum
+        # pushes us past 24 GB at K=25.
+        bp_for_flush = getattr(self._impl, "bbox_predictor", None)
+        if bp_for_flush is not None:
+            _orig_predict_aabb = bp_for_flush.predict_aabb
+
+            def _predict_aabb_flush_after(*a, **kw):
                 try:
-                    from accelerate.hooks import (  # type: ignore[import-not-found]
-                        AlignDevicesHook,
-                        add_hook_to_module,
-                    )
+                    return _orig_predict_aabb(*a, **kw)
+                finally:
+                    try:
+                        torch.cuda.empty_cache()
+                    except Exception:  # noqa: BLE001
+                        pass
 
-                    self._impl.conditioner.geo_encoder.to(geo_target)
-                    hook = AlignDevicesHook(
-                        execution_device=torch.device(geo_target),
-                        io_same_device=True,
-                        offload=False,
-                    )
-                    add_hook_to_module(
-                        self._impl.conditioner.geo_encoder, hook
-                    )
-                    self._logger.info(
-                        f"conditioner.geo_encoder sharded onto "
-                        f"{geo_target} via AlignDevicesHook "
-                        f"(frees primary {device} of the cross-attention "
-                        f"activation peak — ~4-6 GB at K=25)"
-                    )
-                except Exception as e:  # noqa: BLE001
-                    self._logger.warning(
-                        f"Could not shard conditioner.geo_encoder to "
-                        f"{geo_target} ({e}); leaving on primary"
-                    )
+            bp_for_flush.predict_aabb = _predict_aabb_flush_after
+            self._logger.info(
+                "bbox_predictor.predict_aabb wrapped: empty_cache "
+                "after each call (releases Sonata workspace before "
+                "encode_cond runs)"
+            )
 
         # Register forward hooks on each conditioner sub-module so
         # PyTorch's CUDA caching allocator flushes between phases of
