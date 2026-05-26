@@ -45,14 +45,24 @@ spec:
               memory: "8Gi"
               cpu: "4"
             limits:
-              # 20Gi was still OOMKilled (12 restarts in 16h observed
-              # 2026-05-21).  The model file's mmap page cache grows
-              # under cgroup v2 accounting and eventually trips the cap.
-              # Bumped to 24 GiB — still leaves ~8 GiB headroom on the
-              # 32 GB host for kubelet + other workloads.  If OOM
-              # recurs, the next thing to investigate is a real leak
-              # in our code rather than just bumping the cap further.
-              memory: "24Gi"
+              # History on this cap:
+              #   20Gi → OOM after 16h of LLM-only traffic (mmap page
+              #   cache grew under cgroup v2).
+              #   24Gi → OOM as soon as in-process pipelines were
+              #   added (XPart needs ~17 GB transient during weight
+              #   load; concurrent Qwen-27B pushes ~5-8 GB of system
+              #   RAM via KV-offload + context checkpoints — easily
+              #   breaches 24Gi when both run at once).
+              # 26Gi → host node (lsnode-3) has 32 GiB total, so this
+              #   is the realistic ceiling without overcommitting.
+              #   With this cap the runner CANNOT safely hold an
+              #   active Qwen-27B session AND load XPart at the same
+              #   time — callers must evict one before invoking the
+              #   other.  ``IN_PROCESS_AUTO_UNLOAD=true`` handles the
+              #   "image pipeline goes idle" direction; the chat
+              #   side needs explicit eviction (the /generate-3d
+              #   skill does this between steps).
+              memory: "26Gi"
               cpu: "8"
           volumeMounts:
             - name: models
