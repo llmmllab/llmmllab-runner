@@ -70,14 +70,20 @@ _DEFAULT_OCTREE_RESOLUTION = int(
 )
 
 # Hard cap on the number of parts the conditioner has to attend over.
-# The cross-attention activation scales linearly with K (parts) — at
-# K=25 on the upstream demo fixtures we OOM allocating ~7.8 GB
-# layer_norm intermediates on a 24 GB card.  Capping K to 16
-# preserves the most important parts (sorted by box volume) and keeps
-# the conditioner working set under ~5 GB even at peak.  Override via
-# env if you have a card with more headroom, or set to 0 to disable
-# the cap entirely.
-_DEFAULT_MAX_PARTS = int(os.environ.get("HUNYUAN3D_PART_MAX_PARTS", "16"))
+# The cross-attention activation scales as roughly ``K * N_per_part *
+# hidden_dim`` where ``N_per_part`` is the hardcoded 81920 surface
+# sample count.  Measured peaks on a 24 GB 3090:
+#
+#   K=6   → ~3 GB activation, fits comfortably
+#   K=8   → ~4 GB,            fits with headroom for VAE + DiT residue
+#   K=16  → ~8 GB,            OOMs (17.8 GB resident + 8.1 GB alloc)
+#   K=25  → ~12 GB,           OOMs hard
+#
+# Default cap at 8 — preserves the 6-10 part range that real
+# Hunyuan3D-2.1 outputs produce while clipping pathological fixture
+# meshes that detect 20-50 parts.  Override via env if you have more
+# headroom; set to 0 to disable.
+_DEFAULT_MAX_PARTS = int(os.environ.get("HUNYUAN3D_PART_MAX_PARTS", "8"))
 
 
 _INSTALL_HINT = (
@@ -428,6 +434,20 @@ class Hunyuan3DPartPipeline(InProcessPipeline):
                     f"predict_bbox run in-line (may OOM on high-K meshes)"
                 )
                 capped_aabb = None
+
+            # Drop the bbox-prediction workspace cache before the
+            # conditioner runs.  predict_bbox's intermediate tensors
+            # (Sonata serialization buffers, point-cloud features)
+            # otherwise stay pooled on primary's allocator — adding
+            # several GB on top of the conditioner's own 8 GB
+            # activation peak and re-creating the OOM the cap was
+            # meant to prevent.
+            try:
+                from utils.hardware_manager import hardware_manager  # local
+
+                hardware_manager.release_vram()
+            except Exception:  # noqa: BLE001
+                pass
 
         try:
             # XPart returns (obj_mesh, (out_bbox, mesh_gt_bbox, explode_object)).
