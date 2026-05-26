@@ -55,7 +55,7 @@ _MODEL_ID = "hunyuan3d-part"
 
 # Where to persist generated .glb outputs for HTTP retrieval.  Same
 # root the other 3D pipelines write into; the runner's
-# ``/v1/pipelines/img23d_part/files/{filename}`` proxy serves from
+# ``/v1/pipelines/mesh2parts/files/{filename}`` proxy serves from
 # here.
 _OUTPUT_DIR = os.environ.get(
     "HUNYUAN3D_PART_OUTPUT_DIR",
@@ -91,7 +91,7 @@ _INSTALL_HINT = (
 class Hunyuan3DPartPipeline(InProcessPipeline):
     """Mesh-to-parts pipeline backed by Tencent Hunyuan3D-Part (XPart)."""
 
-    name = "img23d_part"
+    name = "mesh2parts"
     task = ModelTask.IMAGETO3D
 
     #: Identifier in ``.models.yaml`` — used to look up

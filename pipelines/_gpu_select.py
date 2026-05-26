@@ -1,6 +1,6 @@
 """Yaml-driven GPU placement for in-process pipelines.
 
-Each in-process pipeline (rembg, img23d, img23d_part) used to either
+Each in-process pipeline (rembg, img23d, mesh2parts) used to either
 default to ``cuda:0`` (which is the small 3060 on this cluster — too
 small for Hunyuan3D-2.1 and a coin-flip OOM for rembg+img23d running
 back-to-back), or carry its own bespoke "free-VRAM scan" code that
@@ -23,7 +23,7 @@ This module centralises that — driven by per-model ``parameters`` in
 
   * ``min_vram_gb: <float>`` — minimum *total* VRAM a candidate
     must have to be eligible.  Set this on memory-heavy pipelines
-    (img23d_part needs 20 GB+) so the auto-picker can't land on a
+    (mesh2parts needs 20 GB+) so the auto-picker can't land on a
     GPU it'll OOM on at load time.
 
 Resolution order, applied in :func:`pick_device`:
@@ -36,7 +36,7 @@ Resolution order, applied in :func:`pick_device`:
   4. Fall back to "cpu" if no CUDA candidate.
 
 Returns a ``DeviceChoice`` with the picked device plus the second-most-free
-candidate (for pipelines like img23d_part that shard across two cards).
+candidate (for pipelines like mesh2parts that shard across two cards).
 """
 
 from __future__ import annotations

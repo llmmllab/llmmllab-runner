@@ -529,7 +529,7 @@
 #   2. XPart       — regenerates each detected part as high-fidelity geometry
 #
 # Reachable at:
-#   POST /v1/pipelines/img23d_part/run        (runner-direct)
+#   POST /v1/pipelines/mesh2parts/run        (runner-direct)
 #   POST /v1/3d/parts                          (api wrapper, recommended)
 #   GET  /v1/3d/parts/<id>_<role>.glb          (download outputs;
 #                                               role = decomposed | exploded
@@ -569,11 +569,11 @@
     # it needs at least one 24 GB-class card, and benefits from
     # sharding across two when available (DiT lands on the
     # secondary via accelerate's AlignDevicesHook, see
-    # ``pipelines/img23d_part/hunyuan3d_part.py``).
+    # ``pipelines/mesh2parts/hunyuan3d_part.py``).
     # ``main_gpu: -1`` + ``tensor_split: "0,1,1"`` means: pick by
     # free VRAM, but cuda:0 (the 3060 on this cluster, 12 GB) is
     # not even a candidate.
     main_gpu: -1
     tensor_split: "0,1,1"
-  pipeline: img23d_part
+  pipeline: mesh2parts
   provider: in_process

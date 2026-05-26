@@ -249,7 +249,7 @@ class HardwareManager:
             # Synchronize + empty_cache PER DEVICE.  torch.cuda's
             # empty_cache only empties the allocator pool for the
             # CURRENT device (set via torch.cuda.set_device).  The
-            # img23d_part pipeline picks a primary GPU and shards
+            # mesh2parts pipeline picks a primary GPU and shards
             # the DiT onto a secondary — without switching device
             # before each empty_cache, the secondary's allocator
             # pool keeps the ~7 GB DiT footprint cached even after

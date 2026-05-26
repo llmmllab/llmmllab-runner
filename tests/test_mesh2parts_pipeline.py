@@ -13,7 +13,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from pipelines.img23d_part.hunyuan3d_part import Hunyuan3DPartPipeline
+from pipelines.mesh2parts.hunyuan3d_part import Hunyuan3DPartPipeline
 from routers import pipelines as pipelines_router
 
 
@@ -131,35 +131,35 @@ def test_hunyuan3d_part_validates_bad_base64():
 # ---------------------------------------------------------------------------
 
 
-def test_list_pipelines_includes_img23d_part():
+def test_list_pipelines_includes_mesh2parts():
     listing = pipelines_router.list_pipelines()
     names = {p["name"] for p in listing["pipelines"]}
-    assert "img23d_part" in names
+    assert "mesh2parts" in names
 
-    entry = next(p for p in listing["pipelines"] if p["name"] == "img23d_part")
+    entry = next(p for p in listing["pipelines"] if p["name"] == "mesh2parts")
     assert entry["task"] == "ImageTo3D"
 
 
 # ---------------------------------------------------------------------------
-# /v1/pipelines/img23d_part/files/{filename}
+# /v1/pipelines/mesh2parts/files/{filename}
 # ---------------------------------------------------------------------------
 
 
-def test_download_img23d_part_artifact_serves_decomposed(tmp_path, monkeypatch):
+def test_download_mesh2parts_artifact_serves_decomposed(tmp_path, monkeypatch):
     monkeypatch.setattr(
         pipelines_router, "_IMG23D_PART_OUTPUT_DIR", str(tmp_path)
     )
     target = tmp_path / "abc123_decomposed.glb"
     target.write_bytes(b"glb-bytes")
 
-    response = pipelines_router.download_img23d_part_artifact(
+    response = pipelines_router.download_mesh2parts_artifact(
         "abc123_decomposed.glb"
     )
     assert response.media_type == "model/gltf-binary"
     assert os.path.realpath(response.path) == os.path.realpath(str(target))
 
 
-def test_download_img23d_part_artifact_all_role_suffixes(tmp_path, monkeypatch):
+def test_download_mesh2parts_artifact_all_role_suffixes(tmp_path, monkeypatch):
     """All valid suffixes (decomposed/exploded/bbox/gt_bbox/input + the
     ``part_NN`` split form) are served; everything else 400s."""
     monkeypatch.setattr(
@@ -172,11 +172,11 @@ def test_download_img23d_part_artifact_all_role_suffixes(tmp_path, monkeypatch):
     ):
         f = tmp_path / f"abc_{role}.glb"
         f.write_bytes(b"x")
-        resp = pipelines_router.download_img23d_part_artifact(f.name)
+        resp = pipelines_router.download_mesh2parts_artifact(f.name)
         assert resp.media_type == "model/gltf-binary"
 
 
-def test_download_img23d_part_artifact_rejects_traversal(tmp_path, monkeypatch):
+def test_download_mesh2parts_artifact_rejects_traversal(tmp_path, monkeypatch):
     from fastapi import HTTPException
 
     monkeypatch.setattr(
@@ -202,11 +202,11 @@ def test_download_img23d_part_artifact_rejects_traversal(tmp_path, monkeypatch):
         "abc_decompose.glb",
     ]:
         with pytest.raises(HTTPException) as exc:
-            pipelines_router.download_img23d_part_artifact(bad)
+            pipelines_router.download_mesh2parts_artifact(bad)
         assert exc.value.status_code == 400, f"expected 400 for {bad!r}"
 
 
-def test_download_img23d_part_artifact_404_when_missing(tmp_path, monkeypatch):
+def test_download_mesh2parts_artifact_404_when_missing(tmp_path, monkeypatch):
     from fastapi import HTTPException
 
     monkeypatch.setattr(
@@ -214,7 +214,7 @@ def test_download_img23d_part_artifact_404_when_missing(tmp_path, monkeypatch):
     )
 
     with pytest.raises(HTTPException) as exc:
-        pipelines_router.download_img23d_part_artifact(
+        pipelines_router.download_mesh2parts_artifact(
             "missing_decomposed.glb"
         )
     assert exc.value.status_code == 404

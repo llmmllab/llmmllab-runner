@@ -38,7 +38,7 @@ from fastapi.responses import FileResponse
 from config import SD_OUTPUT_DIR
 from pipelines.base import InProcessPipeline
 from pipelines.img23d.hunyuan3d import Hunyuan3DPipeline
-from pipelines.img23d_part.hunyuan3d_part import Hunyuan3DPartPipeline
+from pipelines.mesh2parts.hunyuan3d_part import Hunyuan3DPartPipeline
 from pipelines.rembg.rmbg import RMBGPipeline
 from utils.logging import llmmllogger
 
@@ -234,7 +234,7 @@ def download_rembg_artifact(filename: str) -> FileResponse:
 
 
 # ---------------------------------------------------------------------------
-# Static file serving for img23d_part outputs (.glb meshes)
+# Static file serving for mesh2parts outputs (.glb meshes)
 # ---------------------------------------------------------------------------
 #
 # Mirrors the img23d/files endpoint.  XPart emits four .glb files per
@@ -255,8 +255,8 @@ _IMG23D_PART_FILENAME_RE = re.compile(
 )
 
 
-@router.get("/img23d_part/files/{filename}")
-def download_img23d_part_artifact(filename: str) -> FileResponse:
+@router.get("/mesh2parts/files/{filename}")
+def download_mesh2parts_artifact(filename: str) -> FileResponse:
     """Serve a Hunyuan3D-Part output ``.glb`` by basename.
 
     Filename must match ``<id>_<role>.glb`` where ``<role>`` is one

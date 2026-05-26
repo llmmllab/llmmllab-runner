@@ -72,7 +72,7 @@ spec:
               mountPath: /slots
           env:
             # Includes XPart + P3-SAM source dirs so the in-process
-            # Hunyuan3D-Part pipeline (``pipelines/img23d_part``) can
+            # Hunyuan3D-Part pipeline (``pipelines/mesh2parts``) can
             # ``from partgen.partformer_pipeline import ...``.  Neither
             # XPart nor P3-SAM ships a wheel — they're directory-on-PATH.
             - name: PYTHONPATH
@@ -153,7 +153,7 @@ spec:
               value: "http://nvidia-dcgm-exporter.gpu-operator.svc.cluster.local:9400/metrics"
             - name: SLOT_SAVE_DIR
               value: "/slots"
-            # In-process pipelines (rembg, img23d, img23d_part) are
+            # In-process pipelines (rembg, img23d, mesh2parts) are
             # 6-20 GB resident.  Unload them after each request so
             # other models (llama.cpp Qwen, SD diffusion) aren't
             # crowded out of VRAM between turns.  Trade-off: each
@@ -231,7 +231,7 @@ spec:
               mountPath: /slots
           env:
             # Includes XPart + P3-SAM source dirs so the in-process
-            # Hunyuan3D-Part pipeline (``pipelines/img23d_part``) can
+            # Hunyuan3D-Part pipeline (``pipelines/mesh2parts``) can
             # ``from partgen.partformer_pipeline import ...``.  Neither
             # XPart nor P3-SAM ships a wheel — they're directory-on-PATH.
             - name: PYTHONPATH
@@ -314,7 +314,7 @@ spec:
               value: "http://nvidia-dcgm-exporter.gpu-operator.svc.cluster.local:9400/metrics"
             - name: SLOT_SAVE_DIR
               value: "/slots"
-            # In-process pipelines (rembg, img23d, img23d_part) are
+            # In-process pipelines (rembg, img23d, mesh2parts) are
             # 6-20 GB resident.  Unload them after each request so
             # other models (llama.cpp Qwen, SD diffusion) aren't
             # crowded out of VRAM between turns.  Trade-off: each

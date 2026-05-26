@@ -31,7 +31,7 @@ class ModelDetails(BaseModel):
             description=(
                 "Filesystem path or HF repo id for in-process pipelines that don't "
                 "fit the gguf-per-component shape (e.g. rembg / img23d / "
-                "img23d_part).  Read by each pipeline's _resolve_model_path() on "
+                "mesh2parts).  Read by each pipeline's _resolve_model_path() on "
                 "first request.  Without this, ``ConfigDict(extra='ignore')`` "
                 "would silently drop the yaml field and the pipeline would 503 "
                 "with 'has no details.model_path set in .models.yaml'."
