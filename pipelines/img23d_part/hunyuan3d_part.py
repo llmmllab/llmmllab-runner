@@ -371,8 +371,73 @@ class Hunyuan3DPartPipeline(InProcessPipeline):
         # (the 3060) to free primary's working set.  In practice the
         # cross-attention activation at K=25 is ~7.5 GB and the 12 GB
         # 3060 can't hold it — moved the OOM rather than fixing it.
-        # geo_encoder stays on primary; the empty_cache hooks below
-        # plus the predict_bbox post-flush handle the resident peak.
+        # geo_encoder stays on primary.
+        #
+        # However, the 3060 IS big enough for the small auxiliary
+        # modules — shapevae (~0.5 GB) and conditioner.obj_encoder
+        # (~1-2 GB).  Pushing both off primary frees that resident
+        # for the geo_encoder activation peak.  obj_encoder doesn't
+        # contain spconv (it's a VolumeDecoderShapeVAE / pure
+        # pytorch), so AlignDevicesHook works the same way it does
+        # for DiT.
+        small_target_idx: Optional[int] = None
+        try:
+            primary_idx = int(device.split(":")[1])
+            secondary_idx = (
+                int(secondary_device.split(":")[1])
+                if secondary_device is not None else None
+            )
+            cands: list[tuple[int, int]] = []
+            for i in range(torch.cuda.device_count()):
+                if i == primary_idx or i == secondary_idx:
+                    continue
+                free, _t = torch.cuda.mem_get_info(i)
+                cands.append((free, i))
+            if cands:
+                cands.sort(reverse=True)
+                small_target_idx = cands[0][1]
+        except Exception:  # noqa: BLE001
+            small_target_idx = None
+
+        if small_target_idx is not None:
+            small_target = f"cuda:{small_target_idx}"
+            from accelerate.hooks import (  # type: ignore[import-not-found]
+                AlignDevicesHook,
+                add_hook_to_module,
+            )
+
+            sharded = []
+            # Pairs of (parent, attr) to attempt.  ``self._impl.vae``
+            # is the top-level shapevae; conditioner.obj_encoder is
+            # the encoder used during encode_cond.
+            for parent, attr in [
+                (self._impl, "vae"),
+                (getattr(self._impl, "conditioner", None), "obj_encoder"),
+            ]:
+                if parent is None:
+                    continue
+                mod = getattr(parent, attr, None)
+                if mod is None:
+                    continue
+                try:
+                    mod.to(small_target)
+                    hook = AlignDevicesHook(
+                        execution_device=torch.device(small_target),
+                        io_same_device=True,
+                        offload=False,
+                    )
+                    add_hook_to_module(mod, hook)
+                    sharded.append(attr)
+                except Exception as e:  # noqa: BLE001
+                    self._logger.warning(
+                        f"Could not shard {attr} to {small_target} ({e})"
+                    )
+            if sharded:
+                self._logger.info(
+                    f"Sharded onto {small_target}: {', '.join(sharded)} "
+                    f"(frees primary {device} of weights + activation "
+                    f"residue for the geo_encoder's cross-attention peak)"
+                )
 
         # Wrap bbox_predictor.predict_aabb so the Sonata workspace
         # (~3-5 GB cached) gets released before encode_cond runs.
