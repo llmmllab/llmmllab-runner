@@ -743,25 +743,29 @@ class Hunyuan3DPartPipeline(InProcessPipeline):
         # weights survive auto-unload and then block llama-server's
         # tensor_split allocation on a 24 GB card.
 
-        # 1. Restore predict_aabb on the bbox_predictor instance.
-        if (
-            self._bbox_predictor_ref is not None
-            and self._bbox_predict_aabb_orig is not None
-        ):
+        # 1. Remove the predict_aabb wrap.  Important: ``delattr``
+        # the instance attribute (which falls back to the class
+        # method) rather than re-assigning the bound method we
+        # saved in ``_load``.  Re-assigning creates a self-cycle:
+        # ``bp.__dict__['predict_aabb'] → bound_method →
+        # __self__ → bp`` which gc.collect's cycle detector has
+        # been observed to miss across multiple passes — leaving
+        # the bbox_predictor (and the DiT it transitively keeps
+        # alive via the pipeline graph) resident on cuda:N.
+        if self._bbox_predictor_ref is not None:
             try:
-                self._bbox_predictor_ref.predict_aabb = self._bbox_predict_aabb_orig
+                if "predict_aabb" in self._bbox_predictor_ref.__dict__:
+                    delattr(self._bbox_predictor_ref, "predict_aabb")
             except Exception:  # noqa: BLE001
                 pass
         self._bbox_predictor_ref = None
         self._bbox_predict_aabb_orig = None
 
-        # 2. Restore conditioner.forward.
-        if (
-            self._conditioner_ref is not None
-            and self._conditioner_forward_orig is not None
-        ):
+        # 2. Same deal for conditioner.forward.
+        if self._conditioner_ref is not None:
             try:
-                self._conditioner_ref.forward = self._conditioner_forward_orig
+                if "forward" in self._conditioner_ref.__dict__:
+                    delattr(self._conditioner_ref, "forward")
             except Exception:  # noqa: BLE001
                 pass
         self._conditioner_ref = None
