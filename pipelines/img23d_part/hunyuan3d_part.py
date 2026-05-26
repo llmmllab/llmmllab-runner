@@ -328,84 +328,15 @@ class Hunyuan3DPartPipeline(InProcessPipeline):
                     f"({e}); falling back to single-card layout"
                 )
 
-        # Move the bbox_predictor onto a *third* GPU when one's
-        # available.  The conditioner's cross-attention activation
-        # dominates primary's working set; freeing the
-        # ~3-5 GB occupied by bbox_predictor (P3-SAM + Sonata)
-        # gives the conditioner enough room for arbitrary K parts
-        # instead of needing the K-cap workaround.
-        #
-        # We deliberately pick a *different* device than primary +
-        # secondary even if it's smaller (e.g. the 3060), because
-        # bbox_predictor's resident footprint is small.  Sonata's
-        # internal ``.cuda()`` calls (with no index) require the
-        # global default device to be the bbox card while
-        # predict_bbox is executing — handled by wrapping the call
-        # in ``torch.cuda.device(N)`` inside ``_run``.
+        # bbox_predictor stays on primary.  Earlier attempt to shard
+        # it onto cuda:0 (3060) broke spconv's autotuner with
+        # "can't find suitable algorithm" — Sonata's spconv kernels
+        # are sensitive to device + autocast context and trying to
+        # run them under our wrapping triggered a kernel-selection
+        # failure even on small inputs.  Net cost of leaving it on
+        # primary is ~3-5 GB resident; offset by the conditioner
+        # fp16 cast + autocast disable below.
         self._bbox_device: Optional[str] = None
-        bp = getattr(self._impl, "bbox_predictor", None)
-        if bp is not None:
-            # Build a list of candidate cards distinct from primary
-            # + secondary, ranked by free VRAM.  Falls back to
-            # primary if no other card is available.
-            other_idx: Optional[int] = None
-            try:
-                primary_idx = int(device.split(":")[1])
-                secondary_idx = (
-                    int(secondary_device.split(":")[1])
-                    if secondary_device is not None else None
-                )
-                free_list = []
-                for i in range(torch.cuda.device_count()):
-                    if i == primary_idx or i == secondary_idx:
-                        continue
-                    free, _t = torch.cuda.mem_get_info(i)
-                    free_list.append((free, i))
-                if free_list:
-                    free_list.sort(reverse=True)
-                    other_idx = free_list[0][1]
-            except Exception:  # noqa: BLE001
-                other_idx = None
-
-            if other_idx is not None:
-                target = f"cuda:{other_idx}"
-                try:
-                    # AutoMask holds ``.model`` (and an alias
-                    # ``.model_parallel`` that points at the same
-                    # object).  Move the underlying model — the
-                    # alias follows.
-                    if hasattr(bp, "model"):
-                        bp.model.to(target)
-                        bp.model_parallel = bp.model
-                    self._bbox_device = target
-
-                    # Permanently wrap predict_aabb so every caller
-                    # (our pre-bbox cap, XPart's internal __call__)
-                    # runs the bare ``.cuda()`` calls inside
-                    # auto_mask_api against the right card.  Without
-                    # this, the internal calls default to whatever
-                    # ``torch.cuda.current_device()`` is at call
-                    # time — which is the conditioner card.
-                    _orig_predict_aabb = bp.predict_aabb
-                    _target_idx = other_idx
-
-                    def _predict_aabb_on_dedicated_gpu(*a, **kw):
-                        with torch.cuda.device(_target_idx), \
-                             torch.autocast(device_type="cuda", enabled=False):
-                            return _orig_predict_aabb(*a, **kw)
-
-                    bp.predict_aabb = _predict_aabb_on_dedicated_gpu
-                    self._logger.info(
-                        f"bbox_predictor sharded onto {target} "
-                        f"(separate from conditioner/VAE on {device}); "
-                        f"predict_aabb wrapped in cuda.device "
-                        f"+ autocast(False) for spconv kernel coverage"
-                    )
-                except Exception as e:  # noqa: BLE001
-                    self._logger.warning(
-                        f"Could not move bbox_predictor to {target} "
-                        f"({e}); leaving on primary"
-                    )
 
         # Wrap the conditioner forward to keep autocast disabled and
         # ensure inputs land in the target dtype.  Under the outer
