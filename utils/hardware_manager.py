@@ -246,12 +246,39 @@ class HardwareManager:
                     for i in range(torch.cuda.device_count())
                 }
 
+            # Synchronize + empty_cache PER DEVICE.  torch.cuda's
+            # empty_cache only empties the allocator pool for the
+            # CURRENT device (set via torch.cuda.set_device).  The
+            # img23d_part pipeline picks a primary GPU and shards
+            # the DiT onto a secondary — without switching device
+            # before each empty_cache, the secondary's allocator
+            # pool keeps the ~7 GB DiT footprint cached even after
+            # the module is gc'd.  That's the residue that's been
+            # blocking llama-server tensor_split allocations on
+            # the same card.
+            original_device = None
+            try:
+                original_device = torch.cuda.current_device()
+            except Exception:  # noqa: BLE001
+                pass
+
             for i in range(torch.cuda.device_count()):
                 try:
                     torch.cuda.synchronize(i)
                 except Exception:  # noqa: BLE001
                     pass
-            torch.cuda.empty_cache()
+                try:
+                    torch.cuda.set_device(i)
+                    torch.cuda.empty_cache()
+                except Exception:  # noqa: BLE001
+                    pass
+
+            if original_device is not None:
+                try:
+                    torch.cuda.set_device(original_device)
+                except Exception:  # noqa: BLE001
+                    pass
+
             try:
                 torch.cuda.ipc_collect()
             except Exception:  # noqa: BLE001
