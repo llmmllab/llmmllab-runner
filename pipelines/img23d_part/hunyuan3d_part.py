@@ -780,16 +780,20 @@ class Hunyuan3DPartPipeline(InProcessPipeline):
         self._forward_hook_handles = []
 
         # 4. Remove accelerate AlignDevicesHook from each module we
-        # attached one to.  Earlier iteration of this fix also did
-        # ``mod.to("cpu")`` to eagerly release VRAM — but that
-        # MOVES the params to system RAM rather than freeing them,
-        # which accumulates across runs and eventually OOMKills the
-        # pod (~14 GB of weights × multiple submodules × no
-        # subsequent cleanup → exceeds 26 GiB pod limit).  Instead
-        # we just remove the hook and break our refs; the gc.collect
-        # in super().unload() then reclaims the cuda storages
-        # directly because the only paths to them are the refs we
-        # explicitly cleared in steps 1-3 plus self._impl below.
+        # attached one to — AND delete the instance-level
+        # ``forward`` attribute that accelerate leaves behind.
+        # ``remove_hook_from_module`` restores forward by setting
+        # ``module.forward = module._old_forward``, but that stores
+        # the original bound method on the instance, creating a
+        # self-cycle ``module.__dict__['forward'] → bound_method
+        # → __self__ → module``.  That cycle has been observed to
+        # survive gc.collect() and keep the entire DiT module
+        # (and its 6+ GB of cuda storage) resident across runs.
+        # Deleting the instance-level forward makes attribute
+        # access fall back to the class-level forward — no cycle,
+        # no leak.  Earlier ``.to("cpu")`` attempt OOMKilled the
+        # pod because it moved weights into RAM instead of freeing
+        # them; this approach frees both VRAM and RAM.
         try:
             from accelerate.hooks import (  # type: ignore[import-not-found]
                 remove_hook_from_module,
@@ -800,6 +804,14 @@ class Hunyuan3DPartPipeline(InProcessPipeline):
                     remove_hook_from_module(mod)
                 except Exception:  # noqa: BLE001
                     pass
+                # Belt-and-braces cleanup of any instance-level
+                # attribute accelerate may have left behind.
+                for attr in ("forward", "_old_forward", "_hf_hook"):
+                    try:
+                        if attr in mod.__dict__:
+                            delattr(mod, attr)
+                    except Exception:  # noqa: BLE001
+                        pass
         except Exception:  # noqa: BLE001
             pass
         self._hooked_modules = []
