@@ -441,6 +441,45 @@ class Hunyuan3DPartPipeline(InProcessPipeline):
                         f"{geo_target} ({e}); leaving on primary"
                     )
 
+        # Register forward hooks on each conditioner sub-module so
+        # PyTorch's CUDA caching allocator flushes between phases of
+        # the conditioner forward.  Without this, the geo_encoder's
+        # cross-attention intermediates stay pooled while
+        # obj_encoder + seg_feat_encoder run on top — accumulating
+        # several GB of peak resident.  ``empty_cache()`` after each
+        # sub-module returns drops the pool back to the driver.
+        #
+        # Slightly costly (synchronises the stream) but the alternative
+        # is OOM on high-K inputs.  Skipped if no conditioner.
+        cond_for_hooks = getattr(self._impl, "conditioner", None)
+        if cond_for_hooks is not None:
+            def _release_after(_mod, _inp, _out):
+                try:
+                    torch.cuda.empty_cache()
+                except Exception:  # noqa: BLE001
+                    pass
+                return _out
+
+            registered = []
+            for sub_name in ("geo_encoder", "obj_encoder", "seg_feat_encoder"):
+                sub = getattr(cond_for_hooks, sub_name, None)
+                if sub is None:
+                    continue
+                try:
+                    sub.register_forward_hook(_release_after)
+                    registered.append(sub_name)
+                except Exception as e:  # noqa: BLE001
+                    self._logger.warning(
+                        f"Could not register empty_cache hook on "
+                        f"conditioner.{sub_name} ({e})"
+                    )
+            if registered:
+                self._logger.info(
+                    f"empty_cache forward hooks registered on "
+                    f"{', '.join(registered)} — releases allocator "
+                    f"pool between conditioner phases"
+                )
+
         # Wrap the conditioner forward to keep autocast disabled and
         # ensure inputs land in the target dtype.  Under the outer
         # ``@torch.autocast('cuda', dtype=torch.bfloat16)`` decorator
