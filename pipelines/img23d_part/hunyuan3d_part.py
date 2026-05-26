@@ -776,15 +776,16 @@ class Hunyuan3DPartPipeline(InProcessPipeline):
         self._forward_hook_handles = []
 
         # 4. Remove accelerate AlignDevicesHook from each module we
-        # attached one to, AND move its parameters to CPU.  Removing
-        # the hook alone is not enough — accelerate leaves the
-        # weights wherever they were last placed (cuda:N for our
-        # shard layout with offload=False), and ``self._impl =
-        # None`` below isn't sufficient to drop them because some
-        # ref chain inside accelerate's bookkeeping keeps the
-        # parameters reachable.  Explicitly ``.to("cpu")`` forces
-        # the parameter storages off cuda and lets the next
-        # ``empty_cache`` release the freed blocks.
+        # attached one to.  Earlier iteration of this fix also did
+        # ``mod.to("cpu")`` to eagerly release VRAM — but that
+        # MOVES the params to system RAM rather than freeing them,
+        # which accumulates across runs and eventually OOMKills the
+        # pod (~14 GB of weights × multiple submodules × no
+        # subsequent cleanup → exceeds 26 GiB pod limit).  Instead
+        # we just remove the hook and break our refs; the gc.collect
+        # in super().unload() then reclaims the cuda storages
+        # directly because the only paths to them are the refs we
+        # explicitly cleared in steps 1-3 plus self._impl below.
         try:
             from accelerate.hooks import (  # type: ignore[import-not-found]
                 remove_hook_from_module,
@@ -795,42 +796,22 @@ class Hunyuan3DPartPipeline(InProcessPipeline):
                     remove_hook_from_module(mod)
                 except Exception:  # noqa: BLE001
                     pass
-                try:
-                    mod.to("cpu")
-                except Exception:  # noqa: BLE001
-                    pass
         except Exception:  # noqa: BLE001
             pass
         self._hooked_modules = []
 
-        # 5. Best-effort: move ANY remaining submodule we touched
-        # (conditioner sub-modules, vae) back to CPU before nulling
-        # the pipeline.  Same reasoning as (4) — explicit ``.to("cpu")``
-        # frees the cuda storages reliably; gc + empty_cache alone
-        # leave them pooled.
-        if self._impl is not None:
-            for path in (
-                "vae",
-                "conditioner.geo_encoder",
-                "conditioner.obj_encoder",
-                "conditioner.seg_feat_encoder",
-                "conditioner.geo_out_proj",
-                "conditioner.obj_out_proj",
-                "bbox_predictor.model",
-            ):
-                try:
-                    obj = self._impl
-                    for piece in path.split("."):
-                        obj = getattr(obj, piece, None)
-                        if obj is None:
-                            break
-                    if obj is not None and hasattr(obj, "to"):
-                        obj.to("cpu")
-                except Exception:  # noqa: BLE001
-                    pass
-
-        # 6. Now safe to drop the pipeline.  ``super().unload`` runs
-        # gc.collect + synchronize + empty_cache + ipc_collect via
-        # ``HardwareManager.release_vram``.
+        # 5. Drop the pipeline.  ``super().unload`` then runs
+        # gc.collect + synchronize + empty_cache + ipc_collect.
+        # We also run gc.collect TWICE here to give the cycle
+        # detector two passes — accelerate's hook bookkeeping
+        # forms a refcount cycle that occasionally takes more
+        # than one ``gc.collect()`` to break.
         self._impl = None
+        try:
+            import gc
+
+            gc.collect()
+            gc.collect()
+        except Exception:  # noqa: BLE001
+            pass
         await super().unload()
