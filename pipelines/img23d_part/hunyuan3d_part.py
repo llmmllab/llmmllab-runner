@@ -108,6 +108,20 @@ class Hunyuan3DPartPipeline(InProcessPipeline):
         self._impl: Any = None
         # Set by ``_load`` to ``cuda:N`` (N = freest GPU) or ``cpu``.
         self._device: str = "cpu"
+        # Teardown bookkeeping populated by ``_load`` so ``unload``
+        # can fully break the wrapper closures + hook references it
+        # installs.  Without this, monkey-patched bound methods
+        # (predict_aabb, conditioner.forward) and accelerate
+        # AlignDevicesHook keep submodules reachable in gc even
+        # after ``self._impl = None``, leaving 5-10 GB of weights
+        # resident across pipeline calls — which then blocks
+        # llama-server's tensor_split allocation on a 24 GB card.
+        self._bbox_predictor_ref: Any = None
+        self._bbox_predict_aabb_orig: Any = None
+        self._conditioner_ref: Any = None
+        self._conditioner_forward_orig: Any = None
+        self._forward_hook_handles: list[Any] = []
+        self._hooked_modules: list[Any] = []
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -346,6 +360,7 @@ class Hunyuan3DPartPipeline(InProcessPipeline):
                     offload=False,
                 )
                 add_hook_to_module(self._impl.model, hook)
+                self._hooked_modules.append(self._impl.model)
                 self._logger.info(
                     f"DiT submodule sharded onto {secondary_device} "
                     f"with accelerate.AlignDevicesHook; cross-card "
@@ -395,6 +410,8 @@ class Hunyuan3DPartPipeline(InProcessPipeline):
                         pass
 
             bp_for_flush.predict_aabb = _predict_aabb_flush_after
+            self._bbox_predictor_ref = bp_for_flush
+            self._bbox_predict_aabb_orig = _orig_predict_aabb
             self._logger.info(
                 "bbox_predictor.predict_aabb wrapped: empty_cache "
                 "after each call (releases Sonata workspace before "
@@ -426,7 +443,8 @@ class Hunyuan3DPartPipeline(InProcessPipeline):
                 if sub is None:
                     continue
                 try:
-                    sub.register_forward_hook(_release_after)
+                    handle = sub.register_forward_hook(_release_after)
+                    self._forward_hook_handles.append(handle)
                     registered.append(sub_name)
                 except Exception as e:  # noqa: BLE001
                     self._logger.warning(
@@ -469,6 +487,8 @@ class Hunyuan3DPartPipeline(InProcessPipeline):
                     return _orig_cond_forward(*cast_args, **cast_kw)
 
             cond.forward = _cond_forward_no_autocast
+            self._conditioner_ref = cond
+            self._conditioner_forward_orig = _orig_cond_forward
             self._logger.info(
                 "Conditioner forward wrapped: inputs cast to "
                 f"{dtype_env} + autocast disabled inside (keeps "
@@ -714,14 +734,67 @@ class Hunyuan3DPartPipeline(InProcessPipeline):
         }
 
     async def unload(self) -> None:
-        if self._impl is not None:
-            try:
-                self._impl = None
-                try:
-                    import torch  # type: ignore[import-not-found]
+        # Tear down our wrappers BEFORE nulling self._impl.  The
+        # monkey-patched bound methods (predict_aabb / cond.forward)
+        # and accelerate's AlignDevicesHook each create closures /
+        # state that strong-ref the wrapped submodules.  Just doing
+        # ``self._impl = None`` leaves those refs reachable in gc,
+        # so the submodules' parameters stay resident — 6-10 GB of
+        # weights survive auto-unload and then block llama-server's
+        # tensor_split allocation on a 24 GB card.
 
-                    torch.cuda.empty_cache()
-                except Exception:
+        # 1. Restore predict_aabb on the bbox_predictor instance.
+        if (
+            self._bbox_predictor_ref is not None
+            and self._bbox_predict_aabb_orig is not None
+        ):
+            try:
+                self._bbox_predictor_ref.predict_aabb = self._bbox_predict_aabb_orig
+            except Exception:  # noqa: BLE001
+                pass
+        self._bbox_predictor_ref = None
+        self._bbox_predict_aabb_orig = None
+
+        # 2. Restore conditioner.forward.
+        if (
+            self._conditioner_ref is not None
+            and self._conditioner_forward_orig is not None
+        ):
+            try:
+                self._conditioner_ref.forward = self._conditioner_forward_orig
+            except Exception:  # noqa: BLE001
+                pass
+        self._conditioner_ref = None
+        self._conditioner_forward_orig = None
+
+        # 3. Remove per-phase empty_cache forward hooks.
+        for handle in self._forward_hook_handles:
+            try:
+                handle.remove()
+            except Exception:  # noqa: BLE001
+                pass
+        self._forward_hook_handles = []
+
+        # 4. Remove accelerate AlignDevicesHook from each module we
+        # attached one to.  The hook keeps a strong ref to the
+        # module's parameters via ``weights_map``; without removal
+        # the weights survive even after the parent pipeline is None.
+        try:
+            from accelerate.hooks import (  # type: ignore[import-not-found]
+                remove_hook_from_module,
+            )
+
+            for mod in self._hooked_modules:
+                try:
+                    remove_hook_from_module(mod)
+                except Exception:  # noqa: BLE001
                     pass
-            finally:
-                await super().unload()
+        except Exception:  # noqa: BLE001
+            pass
+        self._hooked_modules = []
+
+        # 5. Now safe to drop the pipeline.  ``super().unload`` runs
+        # gc.collect + synchronize + empty_cache + ipc_collect via
+        # ``HardwareManager.release_vram``.
+        self._impl = None
+        await super().unload()
