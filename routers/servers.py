@@ -119,12 +119,12 @@ async def create_server(request: Request, body: CreateServerRequest):
         available = _get_available_model_ids()
         detail = _build_error_response(
             reason=MODEL_NOT_CONFIGURED,
-            message=f"Model '{request.model_id}' is not configured on this runner",
-            requested_model=request.model_id,
+            message=f"Model '{body.model_id}' is not configured on this runner",
+            requested_model=body.model_id,
             available_models=available if len(available) <= 20 else None,
         )
         logger.warning(
-            f"Model not configured: '{request.model_id}'. "
+            f"Model not configured: '{body.model_id}'. "
             f"Available models on this runner: {len(available)}"
         )
         raise HTTPException(status_code=404, detail=detail)
