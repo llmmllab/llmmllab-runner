@@ -203,6 +203,76 @@ class HardwareManager:
         except Exception:
             return 0.0
 
+    def release_vram(self, *, log_before_after: bool = False) -> None:
+        """Flush PyTorch's CUDA allocator cache back to the driver.
+
+        Pipelines that have set their model handles to ``None`` still
+        own VRAM until this is called — PyTorch's caching allocator
+        holds freed-but-cached buffers and ``nvidia-smi`` keeps
+        reporting them as resident.  Without flushing, back-to-back
+        pipeline runs can OOM trying to load on a card whose
+        driver-visible free VRAM is much smaller than the
+        allocator's "we have plenty cached" view.
+
+        Steps:
+          1. ``gc.collect()`` — drop Python-side references that
+             still anchor cuda tensors.
+          2. ``torch.cuda.synchronize(i)`` per device — wait for
+             in-flight kernels so their workspaces' refcounts
+             actually fall to zero.
+          3. ``torch.cuda.empty_cache()`` — release cached
+             allocator blocks back to the driver.
+          4. ``torch.cuda.ipc_collect()`` — drop any IPC tensors.
+
+        Cheap (~50 ms) when there's nothing to release, so safe to
+        call defensively before heavy loads.
+        """
+        try:
+            import gc
+
+            gc.collect()
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            import torch  # type: ignore[import-not-found]
+
+            if not torch.cuda.is_available():
+                return
+
+            before: Optional[Dict[str, float]] = None
+            if log_before_after:
+                before = {
+                    f"cuda:{i}": float(torch.cuda.mem_get_info(i)[0]) / 1024 ** 3
+                    for i in range(torch.cuda.device_count())
+                }
+
+            for i in range(torch.cuda.device_count()):
+                try:
+                    torch.cuda.synchronize(i)
+                except Exception:  # noqa: BLE001
+                    pass
+            torch.cuda.empty_cache()
+            try:
+                torch.cuda.ipc_collect()
+            except Exception:  # noqa: BLE001
+                pass
+
+            if log_before_after and before is not None:
+                after = {
+                    f"cuda:{i}": float(torch.cuda.mem_get_info(i)[0]) / 1024 ** 3
+                    for i in range(torch.cuda.device_count())
+                }
+                logger.info(
+                    "release_vram: "
+                    + ", ".join(
+                        f"{k} {before[k]:.1f}→{after[k]:.1f} GB free"
+                        for k in before
+                    )
+                )
+        except Exception:  # noqa: BLE001
+            # Best-effort cleanup; never raise into the caller.
+            pass
+
     def gpu_stats(self) -> Dict[str, Dict]:
         """Per-GPU stats: name, total_mb, used_mb, free_mb, util_percent, temperature_c."""
         stats: Dict[str, Dict] = {}

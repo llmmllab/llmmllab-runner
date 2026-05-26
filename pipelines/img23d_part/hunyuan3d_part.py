@@ -69,6 +69,17 @@ _DEFAULT_OCTREE_RESOLUTION = int(
     os.environ.get("HUNYUAN3D_PART_OCTREE_RESOLUTION", "512")
 )
 
+# Hard cap on the number of parts the conditioner has to attend over.
+# The cross-attention activation scales linearly with K (parts) — at
+# K=25 on the upstream demo fixtures we OOM allocating ~7.8 GB
+# layer_norm intermediates on a 24 GB card.  Capping K to 16
+# preserves the most important parts (sorted by box volume) and keeps
+# the conditioner working set under ~5 GB even at peak.  Override via
+# env if you have a card with more headroom, or set to 0 to disable
+# the cap entirely.
+_DEFAULT_MAX_PARTS = int(os.environ.get("HUNYUAN3D_PART_MAX_PARTS", "16"))
+
+
 _INSTALL_HINT = (
     "Hunyuan3D-Part dependencies are missing.  The pipeline needs the\n"
     "vendored XPart package, plus its CUDA-bound deps:\n"
@@ -358,15 +369,70 @@ class Hunyuan3DPartPipeline(InProcessPipeline):
             pass
 
         kwargs: Dict[str, Any] = {}
+        seed = 42
         if "seed" in payload:
             try:
-                kwargs["seed"] = int(payload["seed"])
+                seed = int(payload["seed"])
+                kwargs["seed"] = seed
             except (TypeError, ValueError):
                 pass
 
+        # Resolve the per-call max-parts cap.  Payload override
+        # wins (caller may know they have headroom for more parts);
+        # otherwise use the env default.  Set to 0 to disable.
+        max_parts = _DEFAULT_MAX_PARTS
+        try:
+            if "max_parts" in payload:
+                max_parts = int(payload["max_parts"])
+        except (TypeError, ValueError):
+            pass
+
         started = time.perf_counter()
+
+        # Cap the number of bbox-predicted parts so the conditioner's
+        # cross-attention activation stays bounded.  P3-SAM happily
+        # returns 20-50 parts for fixture meshes; the downstream
+        # ``conditioner(part_surface_inbbox, object_surface)`` then
+        # OOMs allocating ~7-8 GB of fp32 layer_norm intermediates
+        # under autocast.  Pre-compute the aabb here, sort by box
+        # volume descending, keep top ``max_parts``, then pass the
+        # capped aabb back to ``self._impl(...)`` — XPart accepts
+        # ``aabb=`` as a kwarg and uses it instead of running
+        # ``predict_bbox`` itself.
+        capped_aabb = None
+        if max_parts > 0 and getattr(self._impl, "bbox_predictor", None) is not None:
+            try:
+                import trimesh  # local — keeps cold start fast
+
+                _mesh_in = trimesh.load(input_path, force="mesh")
+                aabb = self._impl.predict_bbox(  # type: ignore[union-attr]
+                    _mesh_in, seed=seed
+                )
+                # aabb shape: [B, K, 2, 3]  (min/max corners per part)
+                k = aabb.shape[1]
+                if k > max_parts:
+                    extents = aabb[:, :, 1, :] - aabb[:, :, 0, :]
+                    volumes = (extents.abs() + 1e-9).prod(dim=-1)  # [B, K]
+                    top_idx = volumes[0].argsort(descending=True)[:max_parts]
+                    capped_aabb = aabb[:, top_idx, :, :]
+                    self._logger.info(
+                        f"Capped bbox count {k} → {max_parts} "
+                        f"(sorted by volume desc) to keep "
+                        f"conditioner cross-attention bounded"
+                    )
+                else:
+                    capped_aabb = aabb
+            except Exception as e:  # noqa: BLE001
+                self._logger.warning(
+                    f"Pre-bbox capping failed ({e}); letting XPart "
+                    f"predict_bbox run in-line (may OOM on high-K meshes)"
+                )
+                capped_aabb = None
+
         try:
             # XPart returns (obj_mesh, (out_bbox, mesh_gt_bbox, explode_object)).
+            if capped_aabb is not None:
+                kwargs["aabb"] = capped_aabb
             obj_mesh, bbox_tuple = self._impl(  # type: ignore[misc]
                 mesh_path=input_path,
                 octree_resolution=octree_resolution,

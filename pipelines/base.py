@@ -68,8 +68,26 @@ class InProcessPipeline(ABC):
         """
 
     async def unload(self) -> None:
-        """Release GPU resources.  Subclasses may override; default no-op."""
+        """Release GPU resources.
+
+        Subclasses null out their model handles in their own
+        ``unload`` override, then call ``await super().unload()``
+        to flush the PyTorch CUDA allocator back to the driver.
+
+        The actual ``gc.collect`` + ``synchronize`` + ``empty_cache``
+        sequence lives in :meth:`HardwareManager.release_vram` so
+        every pipeline gets the same correct cleanup and the policy
+        (how aggressively to flush, whether to log before/after) is
+        centralised.
+        """
         self._loaded = False
+        try:
+            from utils.hardware_manager import hardware_manager  # local — avoid import cycle
+
+            hardware_manager.release_vram()
+        except Exception:  # noqa: BLE001
+            # Best-effort cleanup; never propagate allocator errors.
+            pass
 
     @property
     def loaded(self) -> bool:
