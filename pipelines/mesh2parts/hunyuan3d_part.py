@@ -568,6 +568,29 @@ class Hunyuan3DPartPipeline(InProcessPipeline):
         except (TypeError, ValueError):
             pass
 
+        # XPart sampling knobs that map directly to the underlying
+        # ``PartFormerPipeline.__call__`` signature.  Optional —
+        # left unset means upstream defaults apply.
+        for _k, _cast in (
+            ("num_inference_steps", int),
+            ("guidance_scale", float),
+        ):
+            if _k in payload and payload[_k] is not None:
+                try:
+                    kwargs[_k] = _cast(payload[_k])
+                except (TypeError, ValueError):
+                    pass
+
+        # Caller-provided ``aabb`` short-circuits P3-SAM's auto-
+        # segmentation.  Shape ``[K, 2, 3]`` or ``[B, K, 2, 3]`` —
+        # K parts, each with min/max corners.  Coordinates are in
+        # the mesh's normalised space (XPart normalises to a unit
+        # cube around the centroid internally).  When provided we
+        # SKIP the pre-bbox cap (the caller is asserting they know
+        # exactly which regions they want, and a cap would silently
+        # drop some of those).
+        user_aabb: Any = payload.get("aabb")
+
         started = time.perf_counter()
 
         # Cap the number of bbox-predicted parts so the conditioner's
@@ -580,8 +603,37 @@ class Hunyuan3DPartPipeline(InProcessPipeline):
         # capped aabb back to ``self._impl(...)`` — XPart accepts
         # ``aabb=`` as a kwarg and uses it instead of running
         # ``predict_bbox`` itself.
+        # Caller-supplied aabb wins absolutely — no auto-segmentation,
+        # no volume-based cap.  We pass it through as a torch tensor
+        # of the expected shape so XPart's ``__call__`` accepts it.
         capped_aabb = None
-        if max_parts > 0 and getattr(self._impl, "bbox_predictor", None) is not None:
+        if user_aabb is not None:
+            try:
+                import torch  # type: ignore[import-not-found]
+
+                t = torch.as_tensor(user_aabb, dtype=torch.float32)
+                # Accept either [K, 2, 3] (batchless) or [B, K, 2, 3].
+                if t.dim() == 3:
+                    t = t.unsqueeze(0)  # → [1, K, 2, 3]
+                if t.dim() != 4 or t.shape[-2:] != (2, 3):
+                    raise ValueError(
+                        f"aabb has bad shape {tuple(t.shape)}; "
+                        f"expected [K, 2, 3] or [B, K, 2, 3]"
+                    )
+                capped_aabb = t
+                self._logger.info(
+                    f"User-supplied aabb: shape={tuple(capped_aabb.shape)} "
+                    f"— P3-SAM auto-segmentation skipped"
+                )
+            except Exception as e:  # noqa: BLE001
+                self._logger.warning(
+                    f"User aabb invalid ({e}); falling back to "
+                    f"P3-SAM auto-segmentation"
+                )
+                capped_aabb = None
+
+        # Otherwise — auto-detect via P3-SAM and (optionally) cap K.
+        if capped_aabb is None and max_parts > 0 and getattr(self._impl, "bbox_predictor", None) is not None:
             try:
                 import trimesh  # local — keeps cold start fast
 
