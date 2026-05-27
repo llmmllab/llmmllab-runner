@@ -303,10 +303,10 @@
 # Weights:  https://huggingface.co/unsloth/Qwen-Image-2512-GGUF
 # ---------------------------------------------------------------------------
 - id: qwen-image-2512
-  name: "Qwen-Image-2512 Q4_K_M"
+  name: "Qwen-Image-2512 Q6_K"
   model: "qwen-image-2512"
   task: TextToImage
-  modified_at: "2026-05-23T00:00:00+00:00"
+  modified_at: "2026-05-27T00:00:00+00:00"
   digest: "0000000000000000000000000000000000000000000000000000000000000000"
   details:
     format: gguf
@@ -314,35 +314,49 @@
     families:
       - qwen-image
     parameter_size: 20B
-    quantization_level: Q4_K_M
-    precision: int4
-    dtype: int4
+    quantization_level: Q6_K
+    precision: int6
+    dtype: int6
     specialization: TextToImage
-    size: 12000000000
+    size: 17500000000
     original_ctx: 0
-    diffusion_model_path: /models/qwen-image/2512/q4_k_m.gguf
+    diffusion_model_path: /models/qwen-image/2512/q6_k.gguf
     vae_path: /models/qwen-image/vae.safetensors
     text_encoder_path: /models/qwen2.5/7b/q4_k_xl.gguf
     text_encoder_kind: llm
   parameters:
-    # Recommended defaults from the unsloth tutorial; the api applies
-    # these when the request body omits the corresponding field.
-    # See https://unsloth.ai/docs/models/tutorials/qwen-image-2512/stable-diffusion.cpp
-    steps: 40
-    cfg_scale: 2.5
-    sampler_name: euler
+    # Tuned for the Q6_K diffusion model (upgraded from Q4_K_M
+    # 2026-05-27 to fix mangled mechanical geometry — Q4 was
+    # generating ambiguous-shape clamps, hand tools, etc.).  Q6
+    # keeps near-fp16 detail and still fits on a single 3090 when
+    # we offload the text encoder to CPU (see clip_on_cpu below).
+    #
+    # The unsloth tutorial defaults (cfg=2.5, sampler=euler,
+    # steps=40) favour aesthetic creativity over prompt fidelity.
+    # For prompt-faithful generations of specific objects (most of
+    # our use case) bumping cfg + switching sampler is a noticeable
+    # quality win:
+    #   * cfg_scale 2.5 → 4.0    — adheres more closely to prompts
+    #   * sampler euler → dpm++_2m — sharper geometry, similar speed
+    #   * steps 40 → 50          — slightly more detail iterations
+    # Per-request body params still override these.
+    steps: 50
+    cfg_scale: 4.0
+    sampler_name: dpm++_2m
     width: 1024
     height: 1024
     seed: -1
-    # Pin sd-server to a 24 GB 3090 — qwen-image's 13 GB diffusion
-    # model can't fit on the 12 GB 3060 at device 0.  Translated to
+    # Pin sd-server to a 24 GB 3090.  Translated to
     # CUDA_VISIBLE_DEVICES by SDCppServerManager._build_subprocess_env.
     main_gpu: 2
-    # The unsloth Qwen-Image-2512 tutorial command line:
-    #   --cfg-scale 2.5 --sampling-method euler --steps 40 \
-    #   --diffusion-fa --flow-shift 3 -H 1024 -W 1024
-    # flow_shift + diffusion_fa are CLI flags (the rest are per-request
-    # body params already covered above).
+    # Q6_K diffusion is ~17 GB; combined with the 4.5 GB text
+    # encoder it overflows the 24 GB card.  Offload the text encoder
+    # to CPU — adds ~5-10 s per prompt for text encode but frees
+    # the VRAM for the diffusion model.  VAE is small (~250 MB) so
+    # we keep it on GPU.
+    clip_on_cpu: true
+    # The unsloth Qwen-Image-2512 tutorial CLI flags (flow_shift +
+    # diffusion_fa are sd-server-launch params, not body fields).
     flow_shift: 3.0
     diffusion_fa: true
   pipeline: qwen-image
@@ -359,10 +373,10 @@
 # Tutorial: https://huggingface.co/unsloth/Qwen-Image-Edit-2511-GGUF
 # ---------------------------------------------------------------------------
 - id: qwen-image-edit-2511
-  name: "Qwen-Image-Edit-2511 Q4_K_M"
+  name: "Qwen-Image-Edit-2511 Q6_K"
   model: "qwen-image-edit-2511"
   task: ImageToImage
-  modified_at: "2026-05-23T00:00:00+00:00"
+  modified_at: "2026-05-27T00:00:00+00:00"
   digest: "0000000000000000000000000000000000000000000000000000000000000001"
   details:
     format: gguf
@@ -370,13 +384,13 @@
     families:
       - qwen-image
     parameter_size: 20B
-    quantization_level: Q4_K_M
-    precision: int4
-    dtype: int4
+    quantization_level: Q6_K
+    precision: int6
+    dtype: int6
     specialization: ImageToImage
-    size: 12000000000
+    size: 17500000000
     original_ctx: 0
-    diffusion_model_path: /models/qwen-image-edit/2511/q4_k_m.gguf
+    diffusion_model_path: /models/qwen-image-edit/2511/q6_k.gguf
     vae_path: /models/qwen-image/vae.safetensors
     # Qwen-Image-Edit uses TWO separate files for Qwen2.5-VL:
     #   --llm         the text encoder (llama.cpp-format gguf)
@@ -407,13 +421,15 @@
     # uses cfg=2.5 but that was tuned for a tiny text-overlay change;
     # for structural edits ("remove the background", "make it autumn",
     # "change the cup colour") we want stronger prompt adherence.
-    steps: 40
+    steps: 50
     cfg_scale: 4.0
     # CRITICAL: image guidance LOW, text guidance HIGH.  Without this
     # asymmetry the QwenImageEditPlus path treats every edit prompt
     # as "make minimal change to preserve the image".
     img_cfg_scale: 1.0
-    sampler_name: euler
+    # dpm++_2m gives sharper geometry on edits than euler at similar
+    # cost; matches the txt2img upgrade.
+    sampler_name: dpm++_2m
     width: 1024
     height: 1024
     # Strength 0.75 is the prompt-guided-edit sweet spot; 0.0 reproduces
@@ -434,6 +450,12 @@
     # AND text-only (i.e. didn't actually solve the underlying
     # problem); now that the encoders are small there's no need.
     main_gpu: 1
+    # Q6_K upgrade (2026-05-27): diffusion grew 13 GB → 17 GB so the
+    # 5 GB margin on cuda:1 disappeared.  Offload the text encoder
+    # to CPU — adds ~5-10 s per request for text encode (vision tower
+    # stays on GPU since it's smaller and runs every request) but
+    # frees enough VRAM for the upgraded diffusion model.
+    clip_on_cpu: true
     # Qwen-Image-recommended Flow shift (Unsloth tutorial).
     flow_shift: 3.0
     # REQUIRED for Qwen-Image-Edit-2511 — without it the editing
