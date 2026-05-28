@@ -182,6 +182,15 @@ class LlamaCppArgumentBuilder:
             config["reasoning"] = "on"
             config["reasoning_budget"] = params.reasoning_budget or 8192
             config["reasoning_format"] = "deepseek"
+            # When the per-token budget is exhausted, llama.cpp injects this
+            # text immediately before the closing think tag and then forces
+            # the close.  Without it the model is cut off mid-thought with
+            # no cue to wrap up, which can produce broken or empty final
+            # answers.  See llama.cpp common/arg.cpp::--reasoning-budget-message.
+            config["reasoning_budget_message"] = (
+                params.reasoning_budget_message
+                or "[Thinking budget exhausted — provide your best answer now.]"
+            )
         else:
             config["reasoning"] = "off"
 

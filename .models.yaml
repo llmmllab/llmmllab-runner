@@ -2,10 +2,10 @@
   name: "Qwen3.6-27B"
   model: "Qwen3.6-27B"
   task: TextToText
+  default: true
   modified_at: "2026-04-22T15:59:03.844554+00:00"
   digest: 19a2f4733a863088bc06665bf307dca95f7d4370b4d8690340cdff9992fe48c6
   size: 35325163744
-  default: true
   details:
     format: gguf
     gguf_file: "/models/qwen3.6/27b/ud-q6_k_xl.gguf"
@@ -23,7 +23,11 @@
   parameters:
     num_ctx: 200000
     repeat_last_n: 128
-    repeat_penalty: 0.7
+    # 1.0 = neutral; >1.0 penalises repetition (1.05–1.15 is typical).
+    # Anything <1.0 REWARDS repetition (see llama-sampler.cpp:2690–2694),
+    # which manifests as runaway think loops and repeated tool-call fences
+    # on Qwen3.  Keep this >= 1.0.
+    repeat_penalty: 1.1
     temperature: 0.6
     seed: -1
     num_predict: -1
@@ -72,7 +76,7 @@
   parameters:
     num_ctx: 200000
     repeat_last_n: 128
-    repeat_penalty: 0.5
+    repeat_penalty: 1.1
     temperature: 0.6
     seed: -1
     num_predict: -1
@@ -136,7 +140,9 @@
   parameters:
     num_ctx: 200000
     repeat_last_n: -1
-    repeat_penalty: 0
+    # NB: must be >= 1.0.  Was 0 which divides positive logits by zero in
+    # llama-sampler.cpp:2693 → undefined logit values (+inf/nan).
+    repeat_penalty: 1.1
     temperature: 0.7
     seed: -1
     num_predict: -1
@@ -185,7 +191,9 @@
   parameters:
     num_ctx: 200000
     repeat_last_n: -1
-    repeat_penalty: 0
+    # NB: must be >= 1.0.  Was 0 which divides positive logits by zero in
+    # llama-sampler.cpp:2693 → undefined logit values (+inf/nan).
+    repeat_penalty: 1.1
     temperature: 0.7
     seed: -1
     num_predict: -1

@@ -165,6 +165,14 @@ class ModelParameters(BaseModel):
         ),
     ] = None
     """Maximum tokens to spend on reasoning (chain-of-thought) before generating final answer"""
+    reasoning_budget_message: Annotated[
+        Optional[str],
+        Field(
+            default=None,
+            description="Text llama.cpp injects before the closing think tag when reasoning_budget is exhausted; cues the model to wrap up",
+        ),
+    ] = None
+    """Text injected on budget exhaustion (passed to llama.cpp --reasoning-budget-message)"""
     flash_attention: Annotated[
         Optional[bool],
         Field(
