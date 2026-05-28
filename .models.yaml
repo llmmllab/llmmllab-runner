@@ -5,6 +5,7 @@
   modified_at: "2026-04-22T15:59:03.844554+00:00"
   digest: 19a2f4733a863088bc06665bf307dca95f7d4370b4d8690340cdff9992fe48c6
   size: 35325163744
+  default: true
   details:
     format: gguf
     gguf_file: "/models/qwen3.6/27b/ud-q6_k_xl.gguf"
@@ -34,7 +35,7 @@
     batch_size: 2048
     micro_batch_size: 512
     n_gpu_layers: -1
-    think: False
+    think: True
     reasoning_budget: 8192
     kv_on_cpu: False
     tensor_split: "0,1,1"
@@ -44,7 +45,6 @@
     # slot_prompt_similarity: 0
     parallel: 4
     split_mode: "layer"
-    is_default: True
   pipeline: llama
   lora_weights: []
   provider: llama_cpp
@@ -53,7 +53,6 @@
   name: "Qwen3.6-27B-MTP"
   model: "Qwen3.6-27B-MTP"
   task: TextToText
-  default: true
   modified_at: "2026-05-17T15:33:45.891082+00:00"
   digest: f3b4a622e06e8ade06ec5c0eb9b40ed7c9bd707b5fada46c0215f4ab4a6bc32b
   size: 26015429760
@@ -200,7 +199,7 @@
     n_gpu_layers: -1
     think: False
     kv_on_cpu: True
-    tensor_split: "0,1,1"
+    # tensor_split: "0,1,1"
     main_gpu: 1
     spec_type_mtp: true
     spec_draft_n_max: 3
