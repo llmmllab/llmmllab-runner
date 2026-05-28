@@ -47,7 +47,19 @@
     # n_cpu_moe: 10
     # ctx_size_reduction_limit: 1.0
     # slot_prompt_similarity: 0
-    parallel: 4
+    # Two slots is enough for a single-user agent workload and gives each
+    # slot ~2x the KV headroom of parallel=4.  With kv_unified each slot
+    # competes for the same KV pool, so fewer slots = less LRU thrashing
+    # under multi-session load.
+    parallel: 2
+    # Eight in-memory KV snapshots per slot is the llama.cpp default and
+    # matches the per-turn restore frequency we want.  At 32 the runner
+    # was copying ~150 MiB per turn even on 97-99 % cache hits.
+    ctx_checkpoints: 8
+    # Mirostat off — adds per-token latency vs the top_p/top_k/min_p
+    # sampler stack already configured above.  Drops eval rate ~10 %
+    # on Qwen3 in our testing.
+    mirostat: 0
     split_mode: "layer"
   pipeline: llama
   lora_weights: []
@@ -96,19 +108,23 @@
     # n_cpu_moe: 10
     # ctx_size_reduction_limit: 1.0
     # slot_prompt_similarity: 0
-    # MTP requires parallel=1 (llama.cpp limitation until parallel drafting support lands)
-    parallel: 4
+    # MTP requires parallel=1 (llama.cpp limitation until parallel drafting
+    # support lands).  Until 2026-05-28 this was set to 4 while MTP was
+    # also enabled — that combination corrupts the slot KV cache and
+    # forces full prompt re-processing every turn ("n_past dropped to 32
+    # every turn for the claude-code session", per the 2026-05-22
+    # investigation).  Pinning to 1 here is required for correctness, not
+    # a performance choice.
+    parallel: 1
     split_mode: "layer"
-    # spec_type_mtp + spec_draft_n_max disabled 2026-05-22 to test
-    # whether MTP speculative decoding is the cause of slot KV cache
-    # invalidations under concurrent load.  llama.cpp was emitting
-    # "forcing full prompt re-processing due to lack of cache data"
-    # immediately after a successful slot restore (n_restored=58k), so
-    # n_past dropped to 32 every turn for the claude-code session.
-    # Re-enable both if cache reuse stays broken without them.
+    # MTP speculative decoding via the dedicated MTP head.  Disabled
+    # 2026-05-22 to test slot-cache invalidations, re-enabled once the
+    # parallel-slot mismatch above was identified as the actual cause.
     spec_type_mtp: true
     spec_draft_n_max: 3
     kv_unified: True
+    ctx_checkpoints: 8
+    mirostat: 0
   pipeline: llama
   lora_weights: []
   provider: llama_cpp
@@ -159,6 +175,9 @@
     # tensor_split: "0,1,1"
     main_gpu: 1
     # n_cpu_moe: 10
+    parallel: 2
+    ctx_checkpoints: 8
+    mirostat: 0
   pipeline: llama
   lora_weights: []
   provider: llama_cpp
@@ -212,6 +231,10 @@
     spec_type_mtp: true
     spec_draft_n_max: 3
     # n_cpu_moe: 10
+    # MTP requires parallel=1 (same constraint as Qwen3_6_27B_MTP).
+    parallel: 1
+    ctx_checkpoints: 8
+    mirostat: 0
   pipeline: llama
   lora_weights: []
   provider: llama_cpp

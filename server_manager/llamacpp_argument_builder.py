@@ -98,10 +98,27 @@ class LlamaCppArgumentBuilder:
                 "ctx_size": params.num_ctx or 90000,
                 "batch_size": params.batch_size or 2048,
                 "ubatch_size": params.micro_batch_size or (params.batch_size or 2048),
-                "ctx_checkpoints": 32,
+                # ctx_checkpoints — number of in-memory KV snapshots per slot.
+                # Each is ~150 MiB on Qwen3-27B Q6, restored on partial-prefix
+                # matches.  llama.cpp default is 8.  We previously hardcoded 32,
+                # which on multi-session workloads triggered ~150 MiB restore
+                # copies every turn (visible in slot logs).  Default to 8 here;
+                # per-model yaml override via ModelParameters.ctx_checkpoints.
+                "ctx_checkpoints": (
+                    params.ctx_checkpoints if params.ctx_checkpoints is not None else 8
+                ),
                 "timeout": 600,
-                "context_shift": True,
-                "mirostat": 1,
+                # context_shift — drop oldest tokens on overflow instead of
+                # erroring.  Default True (matches llama.cpp default and our
+                # historical hardcoded behaviour).
+                "context_shift": (
+                    params.context_shift if params.context_shift is not None else True
+                ),
+                # mirostat — adaptive sampler.  Was hardcoded to 1 (Mirostat v1)
+                # which adds per-token latency on every generation step and is
+                # rarely what you want with top_p/top_k/min_p already configured.
+                # Default to 0 (off); per-model yaml can opt back in.
+                "mirostat": params.mirostat if params.mirostat is not None else 0,
                 # --cache-ram default reduced from 8192 (8 GB) to 2048 (2 GB).
                 # The 8 GB default was per-server, and combined with the
                 # --no-mmap model load (full 35 GB Q6 in host RAM) was pushing
@@ -243,12 +260,23 @@ class LlamaCppArgumentBuilder:
         return self.model.model
 
 
+# Flags that llama.cpp exposes as a paired ``--X`` / ``--no-X`` toggle.
+# When the config value is explicitly ``False`` for one of these, we emit
+# ``--no-X`` instead of dropping the entry — otherwise yaml ``foo: False``
+# silently does nothing because llama.cpp's default for the flag is True.
+_NEGATABLE_FLAGS = {
+    "context_shift",  # llama.cpp default: enabled
+    "kv_unified",     # llama.cpp default: disabled (still useful for explicit-off audit)
+}
+
+
 def _config_to_args(config: Dict[str, Any]) -> List[str]:
     """Convert a {flag_name: value} dict to a flat command-line arg list.
 
     Keys use underscores (python style); they are converted to hyphens
-    for the CLI.  Booleans emit a bare flag when True, nothing when False.
-    None values are skipped.
+    for the CLI.  Booleans emit a bare flag when True; for keys in
+    :data:`_NEGATABLE_FLAGS`, an explicit ``False`` emits ``--no-X``.
+    All other ``False`` booleans and ``None`` values are skipped.
     """
     args: List[str] = []
     for key, value in config.items():
@@ -258,6 +286,8 @@ def _config_to_args(config: Dict[str, Any]) -> List[str]:
         if isinstance(value, bool):
             if value:
                 args.append(flag)
+            elif key in _NEGATABLE_FLAGS:
+                args.append(f"--no-{key.replace('_', '-')}")
         elif isinstance(value, (list, tuple)):
             if value:
                 args.extend([flag, ",".join(map(str, value))])
