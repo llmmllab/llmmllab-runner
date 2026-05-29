@@ -2,25 +2,25 @@
   name: "Qwen3.5-9B"
   model: "Qwen3.5-9B"
   task: TextToText
-  default: true
   modified_at: "2026-04-03T17:42:00.692848+00:00"
   digest: 8f0cb1e8e058e45c7d9676fcd4da2f08eb62ff537da747a6ffc7157c1f6a5684
   size: 771092736
   details:
     format: gguf
-    gguf_file: "/models/qwen3.5/9b/ud-q_4_k_xl.gguf"
+    gguf_file: "/models/qwen3.5/9b/ud-q6_k_xl.gguf"
     family: qwen
     families:
       - qwen
     parameter_size: 752.4M
-    quantization_level: Q4_K_XL
+    quantization_level: Q6_K_XL
     precision: int4
     dtype: int4
     specialization: Text
     size: 771092736
     original_ctx: 2048
+    clip_model_path: "/models/qwen3.5/9b/mmproj.gguf"
   parameters:
-    num_ctx: 100000
+    num_ctx: 200000
     repeat_last_n: 256
     repeat_penalty: 1.1
     temperature: 0.7
@@ -36,9 +36,7 @@
     n_gpu_layers: -1
     think: False
     kv_on_cpu: True
-    parallel: 4
-    # slot_prompt_similarity: 0
-    is_default: True
+    # n_cpu_moe: 10
   pipeline: llama
   lora_weights: []
   provider: llama_cpp
