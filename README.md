@@ -66,8 +66,8 @@ Client → NGINX Gateway → llmmllab-runner (:8000)
 
 | Tier | Env Var | Default | Behavior |
 |------|---------|---------|----------|
-| Soft | `CACHE_TIMEOUT_MIN` | 30 min | Server becomes *eligible* for eviction when VRAM pressure occurs |
-| Hard | `EVICTION_TIMEOUT_MIN` | 60 min | Server is *forcibly* stopped regardless of VRAM state |
+| Soft | `CACHE_TIMEOUT_MIN` | 5 min | Server becomes *eligible* for eviction when VRAM pressure occurs. Also drives the api's "paused session vs abandoned server" classifier — see `llmmllab-api` `RunnerClient._select_runner`. |
+| Hard | `EVICTION_TIMEOUT_MIN` | 30 min | Server is *forcibly* stopped regardless of VRAM state |
 
 Timers start when the last client releases a server (use_count drops to 0) and reset when a new request arrives.
 
@@ -321,8 +321,8 @@ All configuration is environment-variable-driven via `.env`:
 | `LOG_LEVEL` | `WARNING` | Log level (DEBUG, INFO, WARNING, ERROR) |
 | `LLAMA_SERVER_EXECUTABLE` | `/llama.cpp/build/bin/llama-server` | Path to llama.cpp binary |
 | `MODELS_FILE_PATH` | (empty) | Path to `.models.yaml` — checked before `/app/.models.yaml` |
-| `CACHE_TIMEOUT_MIN` | `30` | Soft eviction timeout in minutes |
-| `EVICTION_TIMEOUT_MIN` | `60` | Hard eviction timeout in minutes |
+| `CACHE_TIMEOUT_MIN` | `5` | Soft eviction timeout in minutes. The api mirrors this value to decide when an idle loaded server is safe to commandeer for a new session. |
+| `EVICTION_TIMEOUT_MIN` | `30` | Hard eviction timeout in minutes |
 | `RUNNER_PORT` | `8000` | Port the runner listens on |
 | `RUNNER_HOST` | `0.0.0.0` | Bind address |
 | `SERVER_PORT_RANGE_START` | `8001` | Start of dynamic port range for llama.cpp instances |

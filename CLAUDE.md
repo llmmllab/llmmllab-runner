@@ -37,8 +37,8 @@ All commands use `uv` (managed via Makefile). The project requires a `.env` file
 
 - `ServerCache` (`cache.py`) is a thread-safe registry of `ServerEntry` objects with use-count tracking
 - Two-tier idle eviction:
-  - **Soft** (`CACHE_TIMEOUT_MIN`, default 30min): servers become eligible for eviction when VRAM pressure occurs
-  - **Hard** (`EVICTION_TIMEOUT_MIN`, default 60min): servers are forcibly stopped regardless of VRAM
+  - **Soft** (`CACHE_TIMEOUT_MIN`, default 5min): servers become eligible for eviction when VRAM pressure occurs. Also the threshold the api uses to distinguish "session paused mid-conversation, don't preempt" from "abandoned, safe to commandeer for a new session."
+  - **Hard** (`EVICTION_TIMEOUT_MIN`, default 30min): servers are forcibly stopped regardless of VRAM
 - A background asyncio task runs every 60s calling `evict_idle()` and checking GPU thermals
 - `LlamaCppServerManager` (`server_manager/llamacpp.py`) spawns `llama-server` subprocesses, waits for `/health` readiness, and handles graceful shutdown via SIGTERM
 - A per-manager watchdog thread purges crashed subprocesses from `ServerCache` immediately (see "Process-Death Watchdog" below) so the proxy stops routing to a dead port rather than 502-storming until TTL eviction
