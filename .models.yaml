@@ -271,11 +271,12 @@
     #   CUDA1 = RTX 3090 (24 GB)
     #   CUDA2 = RTX 3090 (24 GB)
     # On a 12 GB device, the F32 mmproj (1.7 GB) only fits if the
-    # compute buffers stay small.  Default batch/ubatch (4096/4096) +
-    # 200k num_ctx left no room and triggered cudaMalloc OOM at the
-    # mmproj-loading step.  Same constraint as the small runner's
-    # RTX 2060 — see .models.small.yaml for matching tuning.
-    num_ctx: 65000
+    # compute buffers stay small.  Default batch/ubatch (4096/4096)
+    # left no room and triggered cudaMalloc OOM at the mmproj-loading
+    # step.  Compute buffers scale with batch_size × ubatch_size, NOT
+    # num_ctx (KV is on CPU via kv_on_cpu: True), so we keep the full
+    # 200k context and cap the batch instead.  Matches .models.small.yaml.
+    num_ctx: 200000
     repeat_last_n: 256
     repeat_penalty: 1.1
     temperature: 0.7

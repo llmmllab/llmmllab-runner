@@ -27,12 +27,12 @@
     # Tuned for the RTX 2060 (12 GB VRAM):
     # - Q5 model in VRAM is ~7 GB.
     # - F32 mmproj needs another 1.7 GB.
-    # - Compute buffers scale with batch_size × ubatch_size; the
-    #   previous 4096×4096 chewed up the rest of VRAM and left no
-    #   room for mmproj → cudaMalloc OOM at startup.
-    # 512/256 batch is plenty for an interactive chat workload on
-    # a single user.
-    num_ctx: 65000
+    # - Compute buffers scale with batch_size × ubatch_size, NOT with
+    #   num_ctx (KV cache is offloaded to CPU via kv_on_cpu=True).
+    #   The previous 4096×4096 batches chewed up VRAM and left no room
+    #   for mmproj → cudaMalloc OOM at startup.  512/256 keeps the
+    #   compute buffers compact.
+    num_ctx: 200000
     repeat_last_n: 256
     repeat_penalty: 1.1
     temperature: 0.7
