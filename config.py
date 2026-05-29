@@ -22,10 +22,14 @@ MODELS_FILE_PATH = os.environ.get("MODELS_FILE_PATH", "")
 # long, it becomes *eligible* for eviction if a new request needs VRAM space.
 # Also used by the api as the cutoff for "this server might still belong to a
 # paused session, don't commandeer it" vs "safe to reuse for a new session."
-# Was 30; dropped to 5 so warm cache turnover for multi-session workloads
-# happens fast enough that idle peers don't sit unused while another session
-# queues on a parallel=1 slot.
-CACHE_TIMEOUT_MIN = int(os.environ.get("CACHE_TIMEOUT_MIN", "5"))
+# Was 30 → dropped to 5 → bumped to 10. 5 was too tight: a user pausing for
+# 6-7 minutes to type a reply would lose their slot to a cron commandeer.
+# 10 keeps interactive multi-turn sessions sticky long enough to survive a
+# coffee/Slack-side-conversation pause without sacrificing peer fan-out
+# (the api-side selector now prefers an empty peer over any *loaded* peer,
+# warm-idle included, so an idle peer still picks up new traffic regardless
+# of this window).
+CACHE_TIMEOUT_MIN = int(os.environ.get("CACHE_TIMEOUT_MIN", "10"))
 
 # Hard timeout (minutes): once a server has been idle for this long, it *must*
 # be evicted regardless of VRAM pressure.  Was 60; dropped to 30 to match the
