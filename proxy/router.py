@@ -300,6 +300,21 @@ def _save_file_exists(session_id: str, server_id: str) -> bool:
     return _session_file_key(session_id, server_id) in _known_session_files
 
 
+def _save_file_exists_for_model(session_id: str, model_id: str) -> bool:
+    """Variant that resolves the on-disk filename via the model_id directly.
+
+    Useful when the caller knows the model but no current server_id (e.g. the
+    runner restarted or the server was evicted, so ``_stable_model_key``'s
+    server-cache lookup would miss). Mirrors the sanitization that
+    ``_stable_model_key`` applies before forming the filename.
+    """
+    model_key = (
+        str(model_id).replace("/", "_").replace(":", "_").replace("\\", "_")
+    )
+    file_key = f"slot_{session_id}_{model_key}"
+    return file_key in _known_session_files
+
+
 # ---------------------------------------------------------------------------
 # Prompt-divergence diagnostic (temporary).  Logs at which byte offset the
 # request body first differs from the previous request body for the same
@@ -982,6 +997,24 @@ def _schedule_post_turn_save(
 # ---------------------------------------------------------------------------
 # Slot save / restore proxy endpoints (unchanged public surface)
 # ---------------------------------------------------------------------------
+
+
+@router.get("/v1/sessions/{session_id}/has-saved")
+async def session_has_saved(session_id: str, model_id: str):
+    """Does a slot-save file exist for ``(session_id, model_id)``?
+
+    Answers "if I drop the api-side per-session pin for this runner, will
+    we still have the session's KV checkpoint on disk for next acquire?"
+    so the api can keep the pin honored even when the live server has
+    been evicted. Cheap — reads from the in-memory ``_known_session_files``
+    set populated at startup and on each save.
+    """
+    await _ensure_known_files_loaded()
+    return {
+        "session_id": session_id,
+        "model_id": model_id,
+        "has_saved": _save_file_exists_for_model(session_id, model_id),
+    }
 
 
 @router.post("/v1/server/{server_id}/slots/{slot_id}/save")
