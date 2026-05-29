@@ -20,11 +20,17 @@ MODELS_FILE_PATH = os.environ.get("MODELS_FILE_PATH", "")
 
 # Soft timeout (minutes): once a server has been idle (use_count == 0) for this
 # long, it becomes *eligible* for eviction if a new request needs VRAM space.
-CACHE_TIMEOUT_MIN = int(os.environ.get("CACHE_TIMEOUT_MIN", "30"))
+# Also used by the api as the cutoff for "this server might still belong to a
+# paused session, don't commandeer it" vs "safe to reuse for a new session."
+# Was 30; dropped to 5 so warm cache turnover for multi-session workloads
+# happens fast enough that idle peers don't sit unused while another session
+# queues on a parallel=1 slot.
+CACHE_TIMEOUT_MIN = int(os.environ.get("CACHE_TIMEOUT_MIN", "5"))
 
 # Hard timeout (minutes): once a server has been idle for this long, it *must*
-# be evicted regardless of VRAM pressure.
-EVICTION_TIMEOUT_MIN = int(os.environ.get("EVICTION_TIMEOUT_MIN", "60"))
+# be evicted regardless of VRAM pressure.  Was 60; dropped to 30 to match the
+# tightened CACHE_TIMEOUT_MIN (was a 2× multiple, kept as such here).
+EVICTION_TIMEOUT_MIN = int(os.environ.get("EVICTION_TIMEOUT_MIN", "30"))
 
 RUNNER_PORT = int(os.environ.get("RUNNER_PORT", "8000"))
 RUNNER_HOST = os.environ.get("RUNNER_HOST", "0.0.0.0")
