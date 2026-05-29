@@ -247,13 +247,18 @@
   digest: 8f0cb1e8e058e45c7d9676fcd4da2f08eb62ff537da747a6ffc7157c1f6a5684
   size: 771092736
   details:
+    # Dropped from UD-Q6_K_XL to UD-Q5_K_XL 2026-05-28: the F32 mmproj
+    # (1.82 GB) plus Q6 model (8.76 GB) + workspace overflows the
+    # 12 GB RTX 2060 on the small runner, causing cudaMalloc OOM and
+    # SIGABRT during server startup.  Q5_K_XL drops model size to
+    # ~5.5 GB while keeping mmproj at F32 for vision quality.
     format: gguf
-    gguf_file: "/models/qwen3.5/9b/ud-q6_k_xl.gguf"
+    gguf_file: "/models/qwen3.5/9b/ud-q5_k_xl.gguf"
     family: qwen
     families:
       - qwen
     parameter_size: 752.4M
-    quantization_level: Q6_K_XL
+    quantization_level: Q5_K_XL
     precision: int4
     dtype: int4
     specialization: Text

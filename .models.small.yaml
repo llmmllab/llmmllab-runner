@@ -6,13 +6,17 @@
   digest: 8f0cb1e8e058e45c7d9676fcd4da2f08eb62ff537da747a6ffc7157c1f6a5684
   size: 771092736
   details:
+    # UD-Q5_K_XL on the RTX 2060: Q6 + F32 mmproj overflows 12 GB
+    # VRAM during startup (cudaMalloc OOM, SIGABRT).  Q5 fits with
+    # ~2.7 GB headroom for KV / activations and keeps the F32 mmproj
+    # for full vision quality.
     format: gguf
-    gguf_file: "/models/qwen3.5/9b/ud-q6_k_xl.gguf"
+    gguf_file: "/models/qwen3.5/9b/ud-q5_k_xl.gguf"
     family: qwen
     families:
       - qwen
     parameter_size: 752.4M
-    quantization_level: Q6_K_XL
+    quantization_level: Q5_K_XL
     precision: int4
     dtype: int4
     specialization: Text
