@@ -291,8 +291,25 @@ setup_tracing("llmmllab-runner", app)
 
 @app.get("/health")
 def health():
-    """Health check endpoint."""
+    """Health check endpoint.
+
+    Returns per-GPU stats keyed by gpu id under ``gpu`` (legacy shape,
+    e.g. ``{"0": {"free_mb": ...}, "1": ...}``) AND an aggregate
+    ``available_vram_bytes`` summed across all GPUs.  The api's runner
+    selection prefers the per-GPU shape so it can compute *effective*
+    free VRAM by intersecting with a model's ``tensor_split`` — a model
+    pinned to device 0 via ``tensor_split: "1,0,0"`` shouldn't be
+    credited with VRAM that lives on devices 1 and 2.
+    """
     gpu_stats = hardware_manager.gpu_stats()
+    aggregate_free_bytes = 0
+    for entry in gpu_stats.values():
+        if isinstance(entry, dict) and "free_mb" in entry:
+            try:
+                aggregate_free_bytes += int(float(entry["free_mb"]) * 1024 * 1024)
+            except (TypeError, ValueError):
+                pass
+
     models = []
     try:
         loader = get_model_loader()
@@ -311,7 +328,10 @@ def health():
 
     return {
         "status": "ok",
-        "gpu": gpu_stats,
+        "gpu": {
+            **gpu_stats,
+            "available_vram_bytes": aggregate_free_bytes,
+        },
         "active_servers": active,
         "models": models,
     }
