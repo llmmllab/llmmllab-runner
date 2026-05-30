@@ -48,7 +48,6 @@ RUN cmake -B build \
     -DCMAKE_CUDA_ARCHITECTURES="75;86" \
     -DCMAKE_BUILD_TYPE=Release \
     -DLLAMA_BUILD_EXAMPLES=OFF \
-    -DLLAMA_BUILD_TOOLS=OFF \
     && cmake --build build --config Release -t llama-server -j6
 
 # ---------------------------------------------------------------------------
