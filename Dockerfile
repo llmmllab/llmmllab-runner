@@ -72,10 +72,9 @@ COPY vendors/stable-diffusion.cpp /stable-diffusion.cpp
 WORKDIR /stable-diffusion.cpp
 RUN cmake -B build \
     -DSD_CUDA=ON \
-    -DSD_BUILD_SERVER=ON \
     -DCMAKE_CUDA_ARCHITECTURES="75;86" \
     -DCMAKE_BUILD_TYPE=Release \
-    && cmake --build build --config Release -j6
+    && cmake --build build --target sd-server -j6
 
 # ---------------------------------------------------------------------------
 # Stage 3 — Hunyuan3D-2.1 build (image-to-3D pipeline)
