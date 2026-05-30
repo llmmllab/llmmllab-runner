@@ -47,7 +47,9 @@ RUN cmake -B build \
     -DGGML_CUDA=ON \
     -DCMAKE_CUDA_ARCHITECTURES="75;86" \
     -DCMAKE_BUILD_TYPE=Release \
-    && cmake --build build --config Release -j6
+    -DLLAMA_BUILD_EXAMPLES=OFF \
+    -DLLAMA_BUILD_TOOLS=OFF \
+    && cmake --build build --config Release -t llama-server -j6
 
 # ---------------------------------------------------------------------------
 # Stage 2 — compile stable-diffusion.cpp with CUDA support
