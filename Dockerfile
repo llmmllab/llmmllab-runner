@@ -45,6 +45,7 @@ COPY vendors/llama.cpp /llama.cpp
 WORKDIR /llama.cpp
 RUN cmake -B build \
     -DGGML_CUDA=ON \
+    -DGGML_CUDA_NCCL=ON \
     -DCMAKE_CUDA_ARCHITECTURES="75;86" \
     -DCMAKE_BUILD_TYPE=Release \
     -DLLAMA_BUILD_EXAMPLES=OFF \

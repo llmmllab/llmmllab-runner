@@ -36,11 +36,27 @@
     min_p: 0.01
     max_tokens: 65536
     n_parts: -1
-    batch_size: 2048
-    micro_batch_size: 512
+    # batch=4096, ubatch=2048 widens the prompt-processing kernel from
+    # the llama.cpp server defaults (2048/512). Single larger kernels
+    # absorb better into Ampere SMs; the HF MoE-offload guide flags
+    # equal batch/ubatch as the standard tuning step. Capped at 2048
+    # for the physical (ubatch) batch because GPU2 already sits near
+    # 24/24 GiB and a 4096 ubatch would push the compute buffer over.
+    batch_size: 4096
+    micro_batch_size: 2048
+    # cache_ram bumped from 2048 to 4096 (llama.cpp default is 8192).
+    # More host-side prompt cache helps slot save/restore, but the
+    # runner pod only has ~11 GiB host RAM free — 4 GiB is the safe
+    # middle ground.
+    cache_ram: 4096
     n_gpu_layers: -1
     think: True
-    reasoning_budget: 8192
+    # reasoning_budget dropped 8192 -> 4096. At observed 13 tok/s
+    # decode, 8192 reasoning tokens is ~10 minutes of pure thinking
+    # before the user sees a first non-think token. 4096 is plenty
+    # for coding/structured tasks; reasoning_budget_message lets the
+    # model wrap up cleanly at the cap.
+    reasoning_budget: 4096
     kv_on_cpu: False
     tensor_split: "0,1,1"
     main_gpu: 2
