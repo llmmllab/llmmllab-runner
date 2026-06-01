@@ -63,7 +63,7 @@
   size: 771092736
   details:
     format: gguf
-    gguf_file: "/models/qwen3.5/4b/ud-q_4_k_xl.gguf"
+    gguf_file: "/models/qwen3.5/4b/ud-q6_k_xl.gguf"
     family: qwen
     families:
       - qwen
@@ -74,6 +74,7 @@
     specialization: Text
     size: 771092736
     original_ctx: 2048
+    clip_model_path: "/models/qwen3.5/4b/mmproj.gguf"
   parameters:
     num_ctx: 100000
     repeat_last_n: 256
