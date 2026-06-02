@@ -356,6 +356,7 @@
     kv_on_cpu: True
     parallel: 4
     kv_unified: True
+    tensor_split: "1,0,0"
     # n_cpu_moe: 10
   pipeline: llama
   lora_weights: []
