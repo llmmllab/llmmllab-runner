@@ -147,3 +147,35 @@
     main_gpu: -1
   pipeline: rembg
   provider: in_process
+
+- id: nomic-embed-text-v2-moe
+  name: "Nomic Embed Text v2 MoE"
+  model: "nomic-embed-text-v2-moe"
+  task: TextToEmbeddings
+  modified_at: "2026-06-02T00:00:00+00:00"
+  digest: "0000000000000000000000000000000000000000000000000000000000000003"
+  size: 512225120
+  details:
+    format: gguf
+    gguf_file: "/models/nomic-embed-text-v2-moe/q8_0.gguf"
+    family: nomic-bert-moe
+    families:
+      - nomic-bert-moe
+    parameter_size: 0.47B
+    quantization_level: Q8_0
+    precision: int8
+    dtype: int8
+    specialization: Embedding
+    size: 512225120
+    original_ctx: 2048
+  parameters:
+    # Embedding server: batch == ubatch (llama.cpp requires the whole
+    # prompt in one ubatch for --embedding). 2048 covers a full memory
+    # chunk and the 0.47B MoE compute buffer fits the 12 GB RTX 2060.
+    num_ctx: 2048
+    batch_size: 2048
+    n_gpu_layers: -1
+    main_gpu: 0
+    parallel: 1
+  pipeline: llama
+  provider: llama_cpp

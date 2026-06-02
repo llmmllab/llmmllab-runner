@@ -67,16 +67,34 @@ class LlamaCppArgumentBuilder:
     # --- Embedding ---
 
     def _add_embedding_config(self, config: Dict[str, Any]) -> None:
+        params = self.model.parameters or ModelParameters()
+        # llama.cpp requires the whole prompt to fit in one ubatch for
+        # embeddings (server.cpp: rejects n_batch > n_ubatch when
+        # --embedding is set). Keep batch == ubatch so the server starts.
+        batch = params.batch_size or 1024
         config.update(
             {
                 "threads": os.cpu_count() or 4,
-                "ctx_size": 4096,
-                "batch_size": 1024,
+                "ctx_size": params.num_ctx or 4096,
+                "batch_size": batch,
+                "ubatch_size": batch,
                 "embedding": True,
                 "pooling": "mean",
                 "no_webui": True,
             }
         )
+        # GPU placement: honour the model's params so an embedding model
+        # can be pinned to a specific card (e.g. main_gpu: 0 +
+        # tensor_split "1,0,0" to keep it off the 3090s reserved for the
+        # big chat models). Defaults: offload all layers, let llama.cpp
+        # pick the device.
+        config["n_gpu_layers"] = (
+            params.n_gpu_layers if params.n_gpu_layers is not None else -1
+        )
+        if params.main_gpu is not None:
+            config["main_gpu"] = params.main_gpu
+        if params.tensor_split:
+            config["tensor_split"] = params.tensor_split
         if LOG_LEVEL.lower() == "debug":
             config["verbose"] = True
 
