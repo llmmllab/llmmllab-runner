@@ -338,14 +338,14 @@
     original_ctx: 2048
     clip_model_path: "/models/qwen3.5/4b/mmproj.gguf"
   parameters:
-    num_ctx: 100000
+    num_ctx: 200000
     repeat_last_n: 256
     repeat_penalty: 1.1
-    temperature: 0.7
+    temperature: 0.6
     seed: -1
     num_predict: -1
     top_k: 20
-    top_p: 0.95
+    top_p: 0.90
     min_p: 0.05
     max_tokens: 16384
     n_parts: -1
@@ -354,6 +354,8 @@
     n_gpu_layers: -1
     think: False
     kv_on_cpu: True
+    parallel: 4
+    kv_unified: True
     # n_cpu_moe: 10
   pipeline: llama
   lora_weights: []
