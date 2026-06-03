@@ -261,7 +261,10 @@
   task: TextToText
   modified_at: "2026-04-03T17:42:00.692848+00:00"
   digest: 8f0cb1e8e058e45c7d9676fcd4da2f08eb62ff537da747a6ffc7157c1f6a5684
-  size: 771092736
+  # Real on-disk size of ud-q5_k_xl.gguf (6.74 GB).  Was a bogus
+  # 771092736 (~0.77 GB), which broke VRAM accounting in
+  # _estimate_model_size / _evict_for_vram on the shared 12 GB CUDA0.
+  size: 6743680224
   details:
     # Dropped from UD-Q6_K_XL to UD-Q5_K_XL 2026-05-28: the F32 mmproj
     # (1.82 GB) plus Q6 model (8.76 GB) + workspace overflows the
@@ -278,7 +281,7 @@
     precision: int4
     dtype: int4
     specialization: Text
-    size: 771092736
+    size: 6743680224
     original_ctx: 2048
     clip_model_path: "/models/qwen3.5/9b/mmproj.gguf"
   parameters:
@@ -322,7 +325,15 @@
   task: TextToText
   modified_at: "2026-04-03T17:42:00.692848+00:00"
   digest: 8f0cb1e8e058e45c7d9676fcd4da2f08eb62ff537da747a6ffc7157c1f6a5684
-  size: 771092736
+  # Real on-disk size of ud-q6_k_xl.gguf (4.15 GB).  Was a bogus
+  # 771092736 (~0.77 GB), which broke _estimate_model_size /
+  # _evict_for_vram accounting on the shared 12 GB CUDA0.
+  #
+  # The big runner keeps Q6 here: it has 3 large GPUs (3060 + 2×3090)
+  # and the Q4 variant (ud-q_4_k_xl.gguf) is NOT present in this node's
+  # model store — only the small runner (.models.small.yaml) was
+  # dropped to Q4 to fix the single-2060 co-load OOM.
+  size: 4145548448
   details:
     format: gguf
     gguf_file: "/models/qwen3.5/4b/ud-q6_k_xl.gguf"
@@ -330,11 +341,13 @@
     families:
       - qwen
     parameter_size: 752.4M
+    # NB: this label says Q4_K_XL but the gguf_file above is Q6_K_XL —
+    # pre-existing mislabel, left as-is to avoid an unrelated churn.
     quantization_level: Q4_K_XL
     precision: int4
     dtype: int4
     specialization: Text
-    size: 771092736
+    size: 4145548448
     original_ctx: 2048
     clip_model_path: "/models/qwen3.5/4b/mmproj.gguf"
   parameters:

@@ -69,14 +69,44 @@ class CreateServerRequest(BaseModel):
 
 
 def _estimate_model_size(model) -> float:
-    """Estimate VRAM needed for a model, in bytes."""
+    """Estimate VRAM needed for a model, in bytes.
+
+    Sums the weights (``details.size``) plus the multimodal projector
+    (``details.clip_model_path``, the mmproj GGUF) when present, because the
+    clip/mmproj is loaded into VRAM alongside the weights but is NOT included
+    in ``details.size``.  For the small-runner vision models this is a
+    non-trivial 1.3-1.8 GB of F32 mmproj that the old VRAM-only estimate
+    ignored — under-counting the footprint so ``_evict_for_vram`` freed too
+    little and let two models try to co-load on the single 12 GB card,
+    triggering the cudaMalloc co-load OOM.  We only ever ADD to the estimate
+    here, so the change is conservative (more eviction headroom, never less).
+
+    KV cache is intentionally NOT added: these models set ``kv_on_cpu: True``
+    so the KV lands in host RAM, not VRAM — counting it against VRAM would be
+    wrong.  (Host-RAM accounting is governed by the pod's cgroup memory limit
+    instead; see k8s/deployment.yaml.)
+    """
+    import os
+
+    overhead = 128 * 1024 * 1024  # 128 MB
     try:
         size = model.details.size
-        if size > 0:
-            return size + (128 * 1024 * 1024)  # 128 MB overhead
+        if not size or size <= 0:
+            return 4 * 1024 * 1024 * 1024  # 4 GB fallback
+
+        # Add the mmproj/clip projector VRAM footprint when present.
+        clip_path = getattr(model.details, "clip_model_path", None)
+        if clip_path:
+            try:
+                size += os.path.getsize(clip_path)
+            except OSError:
+                # File missing / unreadable — fall back to a conservative
+                # 1.5 GB allowance (typical F32 mmproj) rather than ignore it.
+                size += int(1.5 * 1024 * 1024 * 1024)
+
+        return size + overhead
     except Exception:
-        pass
-    return 4 * 1024 * 1024 * 1024  # 4 GB fallback
+        return 4 * 1024 * 1024 * 1024  # 4 GB fallback
 
 
 def _evict_for_vram(model):
