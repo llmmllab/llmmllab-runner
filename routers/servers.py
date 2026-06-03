@@ -6,7 +6,14 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
-from config import RUNNER_PORT, SERVER_START_OOM_RETRIES
+import time
+
+from config import (
+    RUNNER_PORT,
+    SERVER_START_OOM_RETRIES,
+    VRAM_EVICT_MIN_RESIDENCY_SEC,
+    VRAM_EVICT_RELEASE_WAIT_SEC,
+)
 from models import ModelProvider
 from server_manager import LlamaCppServerManager, SDCppServerManager
 from utils.hardware_manager import hardware_manager
@@ -109,26 +116,120 @@ def _estimate_model_size(model) -> float:
         return 4 * 1024 * 1024 * 1024  # 4 GB fallback
 
 
-def _evict_for_vram(model):
-    """Evict idle servers until enough VRAM is available for the model."""
+def _wait_for_vram_release(
+    required_bytes: float,
+    *,
+    baseline: float,
+    timeout_sec: float,
+) -> float:
+    """Poll free VRAM until it reaches ``required_bytes`` or grows past
+    ``baseline``, up to ``timeout_sec``.  Returns the last observed free VRAM.
+
+    ``manager.stop()`` sends SIGTERM asynchronously — nvidia-smi keeps
+    reporting the dying process's VRAM as resident until the kernel reaps it.
+    Re-reading free VRAM immediately therefore under-counts what we just
+    freed, which made the old eviction loop either evict more servers than
+    necessary or (worse) conclude it had freed nothing and 500 anyway.  We
+    give the driver a moment, returning as soon as either (a) we have enough
+    for the new model, or (b) VRAM has visibly grown beyond the pre-stop
+    baseline (the freed process has been reaped, so further waiting on THIS
+    eviction is pointless — the caller should evict the next candidate).
+    """
+    deadline = time.monotonic() + max(0.0, timeout_sec)
+    available = hardware_manager.available_vram_bytes()
+    while time.monotonic() < deadline:
+        available = hardware_manager.available_vram_bytes()
+        if available >= required_bytes or available > baseline:
+            return available
+        time.sleep(0.25)
+    return hardware_manager.available_vram_bytes()
+
+
+def _evict_for_vram(model) -> bool:
+    """Evict least-recently-used IDLE servers until ``model`` fits in VRAM.
+
+    Returns ``True`` if, after any eviction, free VRAM is at least the model's
+    estimated footprint (i.e. the create can proceed), ``False`` if even after
+    evicting every eligible idle server there still isn't room (the caller
+    surfaces a retryable insufficient-resources error rather than letting the
+    llama-server start OOM into a 500).
+
+    Eviction policy (see ``ServerCache.get_idle_lru_for_vram`` /
+    ``VRAM_EVICT_MIN_RESIDENCY_SEC``):
+      * only fully-idle servers (``use_count == 0``) — never one with
+        in-flight requests;
+      * only those idle past a short min-residency — avoids load/evict
+        thrashing;
+      * coldest (longest-idle) first.
+
+    After each ``stop()`` we wait for the driver to actually reclaim the VRAM
+    before deciding whether to evict the next candidate, so we free the
+    minimum necessary.
+    """
     required_bytes = _estimate_model_size(model)
     available = hardware_manager.available_vram_bytes()
     if available >= required_bytes:
-        return
+        return True
 
     from app import server_cache
 
-    eligible = server_cache.get_eligible_for_eviction()
-    for entry in eligible:
+    candidates = server_cache.get_idle_lru_for_vram(VRAM_EVICT_MIN_RESIDENCY_SEC)
+    if not candidates:
+        logger.warning(
+            f"VRAM pressure for model {model.id}: need "
+            f"{required_bytes / 1024**3:.1f} GB, have "
+            f"{available / 1024**3:.1f} GB free, but NO idle server is "
+            f"eligible for eviction (all busy or within min-residency)."
+        )
+        return False
+
+    for entry in candidates:
+        baseline = hardware_manager.available_vram_bytes()
+        logger.info(
+            f"VRAM pressure for model {model.id}: evicting idle LRU server "
+            f"{entry.server_id} (model {entry.model_id}, idle_since="
+            f"{entry.idle_since}) to free space "
+            f"(need {required_bytes / 1024**3:.1f} GB, "
+            f"have {baseline / 1024**3:.1f} GB)."
+        )
         if entry.manager is not None:
             try:
+                # Mark intentional so the watchdog doesn't log this as a crash
+                # or emit a process_died metric.
+                if hasattr(entry.manager, "_intentional_stop"):
+                    entry.manager._intentional_stop = True
                 entry.manager.stop()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(
+                    f"Error stopping server {entry.server_id} during VRAM "
+                    f"eviction: {e}"
+                )
         server_cache.remove(entry.server_id)
-        available = hardware_manager.available_vram_bytes()
+        try:
+            from middleware.runner_metrics import record_server_eviction
+
+            record_server_eviction("vram_pressure")
+        except Exception:
+            pass
+        available = _wait_for_vram_release(
+            required_bytes,
+            baseline=baseline,
+            timeout_sec=VRAM_EVICT_RELEASE_WAIT_SEC,
+        )
         if available >= required_bytes:
-            break
+            logger.info(
+                f"VRAM eviction freed enough for model {model.id}: "
+                f"{available / 1024**3:.1f} GB free."
+            )
+            return True
+
+    logger.warning(
+        f"VRAM eviction for model {model.id} evicted all "
+        f"{len(candidates)} eligible idle server(s) but only "
+        f"{available / 1024**3:.1f} GB free of "
+        f"{required_bytes / 1024**3:.1f} GB needed."
+    )
+    return False
 
 
 @router.post("/v1/server/create")
@@ -230,8 +331,39 @@ async def create_server(request: Request, body: CreateServerRequest):
             ),
         )
 
-    # Evict idle servers if needed for VRAM
-    _evict_for_vram(model)
+    # Evict idle servers if needed to make room for this model.  When even
+    # evicting every eligible idle server can't free enough VRAM, fail fast
+    # with a structured 507 (insufficient capacity) rather than spawning a
+    # llama-server that would OOM into a 500 — the api treats 507 as
+    # "this runner is full, try a peer / requeue" WITHOUT tripping the
+    # circuit breaker, so the request survives instead of taking the runner
+    # offline for everyone.
+    if not _evict_for_vram(model):
+        available_vram = hardware_manager.available_vram_bytes()
+        model_size = _estimate_model_size(model)
+        logger.warning(
+            f"Insufficient VRAM for model {model.id} after eviction: "
+            f"need {model_size / 1024**3:.1f} GB, have "
+            f"{available_vram / 1024**3:.1f} GB free."
+        )
+        raise HTTPException(
+            status_code=507,
+            detail=_build_error_response(
+                reason=INSUFFICIENT_RESOURCES,
+                message=(
+                    f"Insufficient VRAM to start a server for model "
+                    f"'{model.id}': all GPUs are occupied by in-use servers "
+                    f"that cannot be evicted. Estimated model size: "
+                    f"{model_size / (1024**3):.1f} GB, available VRAM: "
+                    f"{available_vram / (1024**3):.1f} GB."
+                ),
+                requested_model=model.id,
+                details={
+                    "estimated_model_size_bytes": int(model_size),
+                    "available_vram_bytes": int(available_vram),
+                },
+            ),
+        )
 
     session_id = _session_id_ctx.get() or request.headers.get("x-session-id")
 

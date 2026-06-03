@@ -36,6 +36,38 @@ CACHE_TIMEOUT_MIN = int(os.environ.get("CACHE_TIMEOUT_MIN", "10"))
 # tightened CACHE_TIMEOUT_MIN (was a 2× multiple, kept as such here).
 EVICTION_TIMEOUT_MIN = int(os.environ.get("EVICTION_TIMEOUT_MIN", "30"))
 
+# Minimum residency (seconds) before an IDLE server may be evicted under VRAM
+# *pressure* (i.e. on the create path, to make room for a new model) — distinct
+# from CACHE_TIMEOUT_MIN, which gates the periodic/soft idle reaper.
+#
+# The bug this guards: when every GPU is packed with resident-but-idle servers
+# (use_count == 0), /v1/server/create used to fail outright (cudaMalloc OOM →
+# 500, tripping the api circuit breaker) because the eviction path only freed
+# servers idle past CACHE_TIMEOUT_MIN (10 min).  A server that JUST went idle
+# couldn't be reclaimed, so a brand-new model could never get a slot.
+#
+# On-demand VRAM eviction instead reclaims the least-recently-used IDLE servers
+# right away — but a *short* min-residency stops thrashing: we never evict a
+# server that was loaded < this many seconds ago (it may be a just-warmed model
+# whose first request hasn't arrived yet, or one we'd immediately reload).  We
+# also NEVER evict a server with in-flight requests (use_count > 0), regardless
+# of this timer.  Default 30 s: long enough to avoid load/evict ping-pong,
+# short enough that a packed GPU frees space well within one request's timeout.
+VRAM_EVICT_MIN_RESIDENCY_SEC = int(
+    os.environ.get("VRAM_EVICT_MIN_RESIDENCY_SEC", "30")
+)
+
+# How long (seconds) to wait for a stopped server's VRAM to actually return to
+# the driver after manager.stop() before re-reading free VRAM.  SIGTERM is
+# asynchronous: nvidia-smi keeps reporting the dying process's VRAM as resident
+# until the kernel reaps it, so re-checking free VRAM immediately under-counts
+# what we just freed and makes the eviction loop evict more than necessary (or
+# conclude it freed nothing and 500 anyway).  We poll free VRAM up to this many
+# seconds for the expected drop before giving up on a given eviction.
+VRAM_EVICT_RELEASE_WAIT_SEC = float(
+    os.environ.get("VRAM_EVICT_RELEASE_WAIT_SEC", "8")
+)
+
 RUNNER_PORT = int(os.environ.get("RUNNER_PORT", "8000"))
 RUNNER_HOST = os.environ.get("RUNNER_HOST", "0.0.0.0")
 SERVER_PORT_RANGE_START = int(os.environ.get("SERVER_PORT_RANGE_START", "8001"))
