@@ -221,7 +221,19 @@ spec:
               memory: "4Gi"
               cpu: "2"
             limits:
-              memory: "8Gi"
+              # 8Gi was too tight: the small models declare num_ctx=200000
+              # with kv_on_cpu=True (see .models.small.yaml), so each
+              # llama.cpp server offloads its KV cache to HOST RAM rather
+              # than VRAM.  Two concurrent servers (e.g. Qwen3.5-4B +
+              # Qwen3.5-9B) plus batch buffers overran the 8Gi cgroup limit
+              # and the kernel OOMKilled the whole pod (exit 137) — dropping
+              # every in-memory server handle at once, which is what made
+              # the API's sticky handles 404 ("stale handle") and the next
+              # /server/create 500.  lsnode-4 has ~11.1Gi allocatable, so
+              # 10Gi leaves headroom for kubelet/OS while giving the CPU KV
+              # caches room to coexist.  Note _evict_for_vram only accounts
+              # for VRAM, not host RAM, so the limit is the only backstop.
+              memory: "10Gi"
               cpu: "4"
           volumeMounts:
             - name: models
