@@ -4,7 +4,12 @@
   task: TextToText
   modified_at: "2026-04-03T17:42:00.692848+00:00"
   digest: 8f0cb1e8e058e45c7d9676fcd4da2f08eb62ff537da747a6ffc7157c1f6a5684
-  size: 771092736
+  # Real on-disk size of ud-q5_k_xl.gguf (6.74 GB).  Was a bogus
+  # 771092736 (~0.77 GB) copy-pasted from the 4B entry, which made
+  # _estimate_model_size / _evict_for_vram think the 9B needed <1 GB
+  # — so eviction under-freed and the 9B + 4B tried to co-load on the
+  # single 12 GB RTX 2060, triggering the cudaMalloc co-load OOM.
+  size: 6743680224
   details:
     # UD-Q5_K_XL on the RTX 2060: Q6 + F32 mmproj overflows 12 GB
     # VRAM during startup (cudaMalloc OOM, SIGABRT).  Q5 fits with
@@ -20,7 +25,7 @@
     precision: int4
     dtype: int4
     specialization: Text
-    size: 771092736
+    size: 6743680224
     original_ctx: 2048
     clip_model_path: "/models/qwen3.5/9b/mmproj.gguf"
   parameters:
@@ -60,10 +65,30 @@
   task: TextToText
   modified_at: "2026-04-03T17:42:00.692848+00:00"
   digest: 8f0cb1e8e058e45c7d9676fcd4da2f08eb62ff537da747a6ffc7157c1f6a5684
-  size: 771092736
+  # Real on-disk size of ud-q_4_k_xl.gguf (2.91 GB).  Was a bogus
+  # 771092736 (~0.77 GB), which broke VRAM accounting in
+  # _estimate_model_size / _evict_for_vram (see 9B note above).
+  size: 2912109728
   details:
+    # Dropped from UD-Q6_K_XL → UD-Q4_K_XL 2026-06-02 to fix the
+    # small-runner co-load OOM: on the single 12 GB RTX 2060 the 9B
+    # (Q5, ~6.7 GB) + 4B (Q6, ~4.15 GB) weights plus their two F32
+    # mmprojs (1.82 + 1.33 GB) overflow 12 GB, so whichever model
+    # loads second cudaMalloc-OOMs and BOTH get SIGKILLed; only on
+    # retry (after one is evicted) is there room.  Q4 shrinks the 4B
+    # weights 4.15 GB → 2.91 GB (−1.24 GB), which lets the two
+    # co-fit.
+    #
+    # NB: a Q5 variant of the 4B does NOT exist in the model store
+    # (only ud-q6_k_xl.gguf and ud-q_4_k_xl.gguf are present) and the
+    # runner image ships no llama-quantize to make one, so the
+    # requested Q6→Q5 step isn't available here — Q4 is the
+    # next-smallest *existing* GGUF.  The F32 mmproj is also kept
+    # as-is (no F16 mmproj on disk, no quantize tool to produce one);
+    # the Q6→Q4 weight drop alone reclaims more than the mmproj F16
+    # halving (~0.66 GB) would have.
     format: gguf
-    gguf_file: "/models/qwen3.5/4b/ud-q6_k_xl.gguf"
+    gguf_file: "/models/qwen3.5/4b/ud-q_4_k_xl.gguf"
     family: qwen
     families:
       - qwen
@@ -72,7 +97,7 @@
     precision: int4
     dtype: int4
     specialization: Text
-    size: 771092736
+    size: 2912109728
     original_ctx: 2048
     clip_model_path: "/models/qwen3.5/4b/mmproj.gguf"
   parameters:
