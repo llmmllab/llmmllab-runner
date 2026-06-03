@@ -151,8 +151,13 @@ spec:
             # when the Service load-balances.
             - name: DCGM_EXPORTER_URL
               value: "http://nvidia-dcgm-exporter.gpu-operator.svc.cluster.local:9400/metrics"
+            # Disabled: every model on these runners is multimodal (mmproj),
+            # and llama.cpp does not support slot save/restore for multimodal
+            # contexts — each /slots save returned 501 in a per-turn storm
+            # (and per-eviction). Empty also drops the --no-mmap/--swa-full
+            # side-effects (less host-RAM pressure on model switches).
             - name: SLOT_SAVE_DIR
-              value: "/slots"
+              value: ""
             # In-process pipelines (rembg, img23d, mesh2parts) are
             # 6-20 GB resident.  Unload them after each request so
             # other models (llama.cpp Qwen, SD diffusion) aren't
@@ -324,8 +329,13 @@ spec:
             # when the Service load-balances.
             - name: DCGM_EXPORTER_URL
               value: "http://nvidia-dcgm-exporter.gpu-operator.svc.cluster.local:9400/metrics"
+            # Disabled: every model on these runners is multimodal (mmproj),
+            # and llama.cpp does not support slot save/restore for multimodal
+            # contexts — each /slots save returned 501 in a per-turn storm
+            # (and per-eviction). Empty also drops the --no-mmap/--swa-full
+            # side-effects (less host-RAM pressure on model switches).
             - name: SLOT_SAVE_DIR
-              value: "/slots"
+              value: ""
             # In-process pipelines (rembg, img23d, mesh2parts) are
             # 6-20 GB resident.  Unload them after each request so
             # other models (llama.cpp Qwen, SD diffusion) aren't

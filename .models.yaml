@@ -63,11 +63,16 @@
     # n_cpu_moe: 10
     # ctx_size_reduction_limit: 1.0
     # slot_prompt_similarity: 0
-    # Two slots is enough for a single-user agent workload and gives each
-    # slot ~2x the KV headroom of parallel=4.  With kv_unified each slot
-    # competes for the same KV pool, so fewer slots = less LRU thrashing
-    # under multi-session load.
-    parallel: 2
+    # Unified KV cache: a single shared KV pool, so EVERY slot can use the
+    # full num_ctx (200k) — slots do NOT fragment the context the way
+    # non-unified parallel does (parallel=N would otherwise give each slot
+    # num_ctx/N). With kv_unified + 4 slots the runner serves up to 4
+    # concurrent large-context sessions (agent + CC dispatches + crons) at the
+    # full context each, instead of LRU-evicting + full-re-prefilling them
+    # against 2 slots — which was the dominant cause of the multi-session
+    # slowdown. (Was parallel:2, non-unified.)
+    kv_unified: True
+    parallel: 4
     # Eight in-memory KV snapshots per slot is the llama.cpp default and
     # matches the per-turn restore frequency we want.  At 32 the runner
     # was copying ~150 MiB per turn even on 97-99 % cache hits.
