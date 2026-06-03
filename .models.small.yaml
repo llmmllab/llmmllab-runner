@@ -11,10 +11,13 @@
   # single 12 GB RTX 2060, triggering the cudaMalloc co-load OOM.
   size: 6743680224
   details:
-    # UD-Q5_K_XL on the RTX 2060: Q6 + F32 mmproj overflows 12 GB
-    # VRAM during startup (cudaMalloc OOM, SIGABRT).  Q5 fits with
-    # ~2.7 GB headroom for KV / activations and keeps the F32 mmproj
-    # for full vision quality.
+    # UD-Q5_K_XL weights + F16 mmproj on the single 12 GB RTX 2060.
+    # The mmproj was dropped F32 → F16 (2026-06-02): 1.82 GB → 0.92 GB
+    # (−0.90 GB VRAM) so the 9B + 4B co-reside on the 12 GB card with KV
+    # ON GPU at 80k context.  F16 mmproj keeps full vision quality
+    # (F16 is the precision the projector trains/serves at).
+    # Downloaded from https://huggingface.co/unsloth/Qwen3.5-9B-GGUF
+    #   mmproj-F16.gguf → mmproj-f16.gguf
     format: gguf
     gguf_file: "/models/qwen3.5/9b/ud-q5_k_xl.gguf"
     family: qwen
@@ -27,17 +30,19 @@
     specialization: Text
     size: 6743680224
     original_ctx: 2048
-    clip_model_path: "/models/qwen3.5/9b/mmproj.gguf"
+    clip_model_path: "/models/qwen3.5/9b/mmproj-f16.gguf"
   parameters:
-    # Tuned for the RTX 2060 (12 GB VRAM):
-    # - Q5 model in VRAM is ~7 GB.
-    # - F32 mmproj needs another 1.7 GB.
-    # - Compute buffers scale with batch_size × ubatch_size, NOT with
-    #   num_ctx (KV cache is offloaded to CPU via kv_on_cpu=True).
-    #   The previous 4096×4096 batches chewed up VRAM and left no room
-    #   for mmproj → cudaMalloc OOM at startup.  512/256 keeps the
-    #   compute buffers compact.
-    num_ctx: 200000
+    # VRAM budget on the single 12 GB RTX 2060 with KV ON GPU
+    # (kv_on_cpu=False):
+    #   * weights  Q5      ~6.7 GB
+    #   * mmproj   F16     ~0.92 GB
+    #   * 80k KV (on GPU) + compute buffers   the remainder
+    # Keeping KV on GPU avoids the host-RAM pod-cgroup OOM that the
+    # prior kv_on_cpu=True + 200k ctx caused (a single load peaked
+    # ~9 GiB RSS and OOMKilled the pod).  num_ctx 200000 → 80000 is the
+    # required-minimum agent context; parallel stays 1 and batch/ubatch
+    # stay compact (512/256) so the on-GPU KV + buffers fit.
+    num_ctx: 80000
     repeat_last_n: 256
     repeat_penalty: 1.1
     temperature: 0.7
@@ -52,7 +57,8 @@
     micro_batch_size: 256
     n_gpu_layers: -1
     think: False
-    kv_on_cpu: True
+    # KV on GPU (was True): host-RAM offload OOM-killed the pod cgroup.
+    kv_on_cpu: False
     parallel: 1
     # n_cpu_moe: 10
   pipeline: llama
@@ -65,43 +71,52 @@
   task: TextToText
   modified_at: "2026-04-03T17:42:00.692848+00:00"
   digest: 8f0cb1e8e058e45c7d9676fcd4da2f08eb62ff537da747a6ffc7157c1f6a5684
-  # Real on-disk size of ud-q_4_k_xl.gguf (2.91 GB).  Was a bogus
+  # Real on-disk size of ud-q5_k_xl.gguf (3.25 GB).  Was a bogus
   # 771092736 (~0.77 GB), which broke VRAM accounting in
   # _estimate_model_size / _evict_for_vram (see 9B note above).
-  size: 2912109728
+  size: 3250869408
   details:
-    # Dropped from UD-Q6_K_XL → UD-Q4_K_XL 2026-06-02 to fix the
-    # small-runner co-load OOM: on the single 12 GB RTX 2060 the 9B
-    # (Q5, ~6.7 GB) + 4B (Q6, ~4.15 GB) weights plus their two F32
-    # mmprojs (1.82 + 1.33 GB) overflow 12 GB, so whichever model
-    # loads second cudaMalloc-OOMs and BOTH get SIGKILLed; only on
-    # retry (after one is evicted) is there room.  Q4 shrinks the 4B
-    # weights 4.15 GB → 2.91 GB (−1.24 GB), which lets the two
-    # co-fit.
+    # Dropped from UD-Q6_K_XL → UD-Q5_K_XL and mmproj F32 → F16
+    # (2026-06-02) to shrink the 4B's VRAM footprint so the 9B + 4B
+    # co-reside on the single 12 GB RTX 2060 with KV ON GPU
+    # (kv_on_cpu=False) at the required 80k context:
+    #   * weights  4.15 GB (Q6) → 3.25 GB (Q5)   −0.90 GB
+    #   * mmproj   1.33 GB (F32) → 0.67 GB (F16)  −0.66 GB
+    #   = −1.56 GB, which (with the 9B already at Q5 + F16 below) brings
+    #   both models' resident set under 12 GB so neither cudaMalloc-OOMs
+    #   on co-load.
     #
-    # NB: a Q5 variant of the 4B does NOT exist in the model store
-    # (only ud-q6_k_xl.gguf and ud-q_4_k_xl.gguf are present) and the
-    # runner image ships no llama-quantize to make one, so the
-    # requested Q6→Q5 step isn't available here — Q4 is the
-    # next-smallest *existing* GGUF.  The F32 mmproj is also kept
-    # as-is (no F16 mmproj on disk, no quantize tool to produce one);
-    # the Q6→Q4 weight drop alone reclaims more than the mmproj F16
-    # halving (~0.66 GB) would have.
+    # Both files downloaded from the upstream Unsloth GGUF repo
+    # (general.repo_url in the original gguf):
+    #   https://huggingface.co/unsloth/Qwen3.5-4B-GGUF
+    #     Qwen3.5-4B-UD-Q5_K_XL.gguf  → ud-q5_k_xl.gguf
+    #     mmproj-F16.gguf             → mmproj-f16.gguf
     format: gguf
-    gguf_file: "/models/qwen3.5/4b/ud-q_4_k_xl.gguf"
+    gguf_file: "/models/qwen3.5/4b/ud-q5_k_xl.gguf"
     family: qwen
     families:
       - qwen
     parameter_size: 752.4M
-    quantization_level: Q4_K_XL
+    quantization_level: Q5_K_XL
     precision: int4
     dtype: int4
     specialization: Text
-    size: 2912109728
+    size: 3250869408
     original_ctx: 2048
-    clip_model_path: "/models/qwen3.5/4b/mmproj.gguf"
+    clip_model_path: "/models/qwen3.5/4b/mmproj-f16.gguf"
   parameters:
-    num_ctx: 200000
+    # VRAM-conservative profile for the small runner's single 12 GB
+    # RTX 2060.  KV is kept ON GPU (kv_on_cpu=False) — offloading it to
+    # host RAM was the prior cause of the pod-cgroup OOM, and the Q5 +
+    # F16 footprint cut above leaves room for the KV in VRAM instead:
+    #   * num_ctx 200000 → 80000   — 80k is the required-minimum agent
+    #     context; the KV now lives in VRAM, so it must fit alongside the
+    #     weights + mmproj on the 12 GB card.
+    #   * parallel 4 → 1           — one KV slot; 4 slots × 80k would
+    #     quadruple the on-GPU KV for no benefit on a single-user agent.
+    #   * batch/ubatch 4096 → 512/256 — compact compute buffers, matching
+    #     the 9B and leaving headroom for weights + mmproj + KV.
+    num_ctx: 80000
     repeat_last_n: 256
     repeat_penalty: 1.1
     temperature: 0.6
@@ -112,12 +127,14 @@
     min_p: 0.05
     max_tokens: 16384
     n_parts: -1
-    batch_size: 4096
-    micro_batch_size: 4096
+    batch_size: 512
+    micro_batch_size: 256
     n_gpu_layers: -1
     think: False
-    kv_on_cpu: True
-    parallel: 4
+    # KV on GPU (was True): host-RAM offload OOM-killed the pod cgroup;
+    # the Q5 + F16 footprint cut leaves room to keep the 80k KV in VRAM.
+    kv_on_cpu: False
+    parallel: 1
     kv_unified: True
     # n_cpu_moe: 10
   pipeline: llama
