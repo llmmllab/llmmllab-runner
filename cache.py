@@ -227,6 +227,48 @@ class ServerCache:
         return eligible
 
     # ------------------------------------------------------------------
+    # On-demand VRAM eviction — least-recently-used IDLE servers, gated by
+    # a SHORT min-residency (not the soft CACHE_TIMEOUT_MIN).  Used by the
+    # create path to make room for a new model when the GPU is packed with
+    # resident-but-idle servers, instead of letting the create OOM/500.
+    # ------------------------------------------------------------------
+
+    def get_idle_lru_for_vram(
+        self, min_residency_sec: float
+    ) -> List[ServerEntry]:
+        """Return evictable IDLE servers, least-recently-used first.
+
+        A server is a candidate iff ALL of:
+          * it is fully idle — ``use_count == 0`` AND ``idle_since`` is set
+            (we NEVER evict a server with in-flight requests), AND
+          * it is not still ``starting`` (don't evict a half-loaded server —
+            it has no KV worth saving and racing its startup invites OOM),
+          * it went idle at least ``min_residency_sec`` ago (a brief grace so
+            a just-warmed server whose first request hasn't landed yet, or one
+            we'd immediately reload, isn't torn down — prevents thrashing).
+
+        Sorted by ``idle_since`` ascending so callers evict the
+        longest-idle (coldest) server first and keep the most-recently-used
+        warm servers around.  Does NOT mutate the cache; the caller stops and
+        removes the entries it actually needs.
+        """
+        cutoff = time.time() - max(0.0, min_residency_sec)
+        candidates: List[ServerEntry] = []
+        with self._lock:
+            for entry in self._servers.values():
+                if entry.starting:
+                    continue
+                if entry.use_count > 0:
+                    continue
+                if entry.idle_since is None:
+                    continue
+                if entry.idle_since > cutoff:
+                    continue
+                candidates.append(entry)
+        candidates.sort(key=lambda e: e.idle_since or 0.0)
+        return candidates
+
+    # ------------------------------------------------------------------
     # Hard eviction — removes servers that exceed EVICTION_TIMEOUT_MIN.
     # ------------------------------------------------------------------
 
