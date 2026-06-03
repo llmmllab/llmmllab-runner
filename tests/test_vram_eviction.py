@@ -85,11 +85,12 @@ class TestGetIdleLruForVram:
         assert [e.server_id for e in out] == ["fresh"]
 
 
-def _model(size_gb):
+def _model(size_gb, tensor_split=None):
     m = MagicMock()
     m.id = "Qwen3_6_27B"
     m.details.size = int(size_gb * GB)
     m.details.clip_model_path = None
+    m.parameters.tensor_split = tensor_split
     return m
 
 
@@ -120,7 +121,7 @@ class TestEvictForVram:
         app.server_cache = cache
 
         with patch.object(
-            servers_mod.hardware_manager, "available_vram_bytes",
+            servers_mod.hardware_manager, "available_vram_bytes_for_split",
             return_value=30 * GB,
         ):
             assert servers_mod._evict_for_vram(_model(10)) is True
@@ -139,7 +140,7 @@ class TestEvictForVram:
         vram = iter([2 * GB] + [12 * GB] * 20)
         last = {"v": 2 * GB}
 
-        def _avail():
+        def _avail(*_a, **_k):
             try:
                 last["v"] = next(vram)
             except StopIteration:
@@ -149,7 +150,7 @@ class TestEvictForVram:
         import app
         app.server_cache = cache
         with patch.object(
-            servers_mod.hardware_manager, "available_vram_bytes",
+            servers_mod.hardware_manager, "available_vram_bytes_for_split",
             side_effect=_avail,
         ):
             ok = servers_mod._evict_for_vram(_model(10))
@@ -172,7 +173,7 @@ class TestEvictForVram:
 
         # Free VRAM never reaches the 10 GB needed even after eviction.
         with patch.object(
-            servers_mod.hardware_manager, "available_vram_bytes",
+            servers_mod.hardware_manager, "available_vram_bytes_for_split",
             return_value=1 * GB,
         ):
             ok = servers_mod._evict_for_vram(_model(10))
@@ -189,9 +190,98 @@ class TestEvictForVram:
         app.server_cache = cache
 
         with patch.object(
-            servers_mod.hardware_manager, "available_vram_bytes",
+            servers_mod.hardware_manager, "available_vram_bytes_for_split",
             return_value=1 * GB,
         ):
             ok = servers_mod._evict_for_vram(_model(10))
         assert ok is False
         managers["busy"].stop.assert_not_called()
+
+    def test_tensor_split_aware_does_not_evict_for_other_gpu_pressure(self):
+        """Regression for the live failure: a GPU-0-pinned model
+        (tensor_split "1,0,0") under pressure on GPU 0 must measure free VRAM
+        ON GPU 0 only.  With per-split accounting reporting 2 GB free on GPU 0
+        (need 10 GB), eviction must fire — even though total free VRAM across
+        the idle 3090s would look like plenty under the old all-GPU sum.
+        """
+        now = time.time()
+        cache, managers = self._install_cache([
+            _entry("cold", idle_since=now - 600),
+        ])
+        from routers import servers as servers_mod
+        import app
+        app.server_cache = cache
+
+        # Per-split free VRAM: 2 GB before eviction, 12 GB after.
+        vram = iter([2 * GB, 2 * GB, 12 * GB, 12 * GB, 12 * GB])
+        last = {"v": 2 * GB}
+
+        def _avail(_ts):
+            try:
+                last["v"] = next(vram)
+            except StopIteration:
+                pass
+            return last["v"]
+
+        with patch.object(
+            servers_mod.hardware_manager, "available_vram_bytes_for_split",
+            side_effect=_avail,
+        ):
+            ok = servers_mod._evict_for_vram(_model(10, tensor_split="1,0,0"))
+        assert ok is True
+        managers["cold"].stop.assert_called_once()
+
+
+class TestHardwareManagerTensorSplit:
+    """Tensor-split-aware VRAM accounting helpers on HardwareManager."""
+
+    def _hm(self, per_gpu_free_mb):
+        import sys
+        from utils.hardware_manager import HardwareManager
+
+        hwmod = sys.modules["utils.hardware_manager"]
+        hm = HardwareManager.__new__(HardwareManager)
+        hm._has_gpu = True
+
+        class _G:
+            def __init__(self, free_mb):
+                self.mem_free = free_mb
+
+        gpus = [_G(mb) for mb in per_gpu_free_mb]
+        hm._gpus = gpus
+        # free_vram_by_gpu / available_vram_bytes re-read via nvsmi.get_gpus();
+        # patch the module-level nvsmi so they see our fake GPUs.
+        self._nvsmi_patch = patch.object(
+            hwmod.nvsmi, "get_gpus", return_value=gpus
+        )
+        self._nvsmi_patch.start()
+        return hm
+
+    def teardown_method(self):
+        p = getattr(self, "_nvsmi_patch", None)
+        if p is not None:
+            p.stop()
+
+    def test_gpus_for_tensor_split_pins_to_device_0(self):
+        hm = self._hm([12000, 24000, 24000])
+        assert hm.gpus_for_tensor_split("1,0,0") == [0]
+
+    def test_gpus_for_tensor_split_multi(self):
+        hm = self._hm([12000, 24000, 24000])
+        assert hm.gpus_for_tensor_split("0,1,1") == [1, 2]
+
+    def test_gpus_for_tensor_split_none_unpinned(self):
+        hm = self._hm([12000, 24000, 24000])
+        assert hm.gpus_for_tensor_split(None) is None
+
+    def test_available_for_split_counts_only_pinned_gpu(self):
+        # 3 GB free on GPU 0, 23 GB on each 3090.
+        hm = self._hm([3000, 23000, 23000])
+        eff = hm.available_vram_bytes_for_split("1,0,0")
+        # Only GPU 0 counts → ~3 GB, NOT ~49 GB.
+        assert abs(eff - 3000 * MB) < MB
+
+    def test_available_for_split_unpinned_sums_all(self):
+        hm = self._hm([3000, 23000, 23000])
+        eff = hm.available_vram_bytes_for_split(None)
+        assert abs(eff - (3000 + 23000 + 23000) * MB) < MB

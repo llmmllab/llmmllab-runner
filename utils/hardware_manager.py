@@ -203,6 +203,69 @@ class HardwareManager:
         except Exception:
             return 0.0
 
+    def free_vram_by_gpu(self) -> Dict[int, float]:
+        """Per-GPU free VRAM in bytes, keyed by integer device index.
+
+        ``nvsmi`` reports GPUs in the same order CUDA enumerates them, so the
+        list index aligns with the device index a llama.cpp ``tensor_split``
+        refers to.  Returns an empty dict when no GPU is present.
+        """
+        out: Dict[int, float] = {}
+        if not self._has_gpu:
+            return out
+        try:
+            self._gpus = list(nvsmi.get_gpus())
+            for idx, g in enumerate(self._gpus):
+                out[idx] = float(g.mem_free) * 1024 * 1024
+        except Exception:
+            return {}
+        return out
+
+    @staticmethod
+    def _parse_tensor_split(tensor_split):
+        """Parse a llama.cpp ``tensor_split`` string into a weight list.
+
+        ``"1,0,0"`` -> ``[1.0, 0.0, 0.0]`` (model only lands on device 0).
+        Returns ``None`` for a missing/empty/malformed value — callers treat
+        that as "no pinning, use total free VRAM across all GPUs".
+        """
+        if not tensor_split or not isinstance(tensor_split, str):
+            return None
+        try:
+            return [float(x.strip()) for x in tensor_split.split(",") if x.strip()]
+        except ValueError:
+            return None
+
+    def gpus_for_tensor_split(self, tensor_split) -> Optional[List[int]]:
+        """Device indices a model with ``tensor_split`` will actually use.
+
+        ``"1,0,0"`` -> ``[0]``.  Returns ``None`` when there's no pinning
+        (use all GPUs).  Indices beyond the weight list (or with weight 0)
+        are excluded.
+        """
+        weights = self._parse_tensor_split(tensor_split)
+        if weights is None:
+            return None
+        return [i for i, w in enumerate(weights) if w > 0]
+
+    def available_vram_bytes_for_split(self, tensor_split) -> float:
+        """Free VRAM (bytes) only on the GPUs a ``tensor_split`` model lands on.
+
+        Mirrors the api router's ``_effective_free_vram_bytes``: a model
+        pinned to device 0 via ``tensor_split: "1,0,0"`` must NOT be credited
+        with free VRAM that lives on devices 1 and 2.  This is the bug that
+        made on-demand eviction a no-op for GPU-pinned models — the old
+        ``available_vram_bytes()`` summed ALL cards, so a packed 12 GB GPU 0
+        still looked like ~50 GB free (counting the two idle 3090s) and
+        eviction returned early without freeing anything, letting the create
+        OOM into a 500.  Falls back to total free VRAM when unpinned.
+        """
+        gpus = self.gpus_for_tensor_split(tensor_split)
+        per_gpu = self.free_vram_by_gpu()
+        if gpus is None:
+            return sum(per_gpu.values()) if per_gpu else self.available_vram_bytes()
+        return sum(per_gpu.get(i, 0.0) for i in gpus)
+
     def release_vram(self, *, log_before_after: bool = False) -> None:
         """Flush PyTorch's CUDA allocator cache back to the driver.
 

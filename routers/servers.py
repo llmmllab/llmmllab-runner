@@ -116,14 +116,52 @@ def _estimate_model_size(model) -> float:
         return 4 * 1024 * 1024 * 1024  # 4 GB fallback
 
 
+def _tensor_split_for_model_id(model_id: str):
+    """Best-effort lookup of a model's ``tensor_split`` string by id.
+
+    Returns ``None`` when the model is unknown or has no pinning (treated as
+    "uses all GPUs").  Used to decide which GPUs an already-loaded server
+    occupies so eviction can target the GPU(s) the *new* model actually needs.
+    """
+    try:
+        m = model_loader.get_model_by_id(model_id)
+        if m is None or m.parameters is None:
+            return None
+        return m.parameters.tensor_split
+    except Exception:
+        return None
+
+
+def _server_overlaps_gpus(entry, target_gpus) -> bool:
+    """True if evicting ``entry`` would free VRAM on any GPU in ``target_gpus``.
+
+    ``target_gpus is None`` means the new model is unpinned (spans all GPUs),
+    so every resident server overlaps.  Otherwise we compare the candidate's
+    own model tensor_split GPU set against the target set; a candidate pinned
+    only to GPUs the new model won't use can't help and is skipped (evicting
+    it would free the wrong card and the loop would never converge).
+    """
+    if target_gpus is None:
+        return True
+    entry_gpus = hardware_manager.gpus_for_tensor_split(
+        _tensor_split_for_model_id(entry.model_id)
+    )
+    if entry_gpus is None:
+        # Candidate spans all GPUs → it occupies the target GPU(s) too.
+        return True
+    return bool(set(entry_gpus) & set(target_gpus))
+
+
 def _wait_for_vram_release(
     required_bytes: float,
+    tensor_split,
     *,
     baseline: float,
     timeout_sec: float,
 ) -> float:
-    """Poll free VRAM until it reaches ``required_bytes`` or grows past
-    ``baseline``, up to ``timeout_sec``.  Returns the last observed free VRAM.
+    """Poll free VRAM (on the model's GPUs) until it reaches ``required_bytes``
+    or grows past ``baseline``, up to ``timeout_sec``.  Returns the last
+    observed effective free VRAM.
 
     ``manager.stop()`` sends SIGTERM asynchronously — nvidia-smi keeps
     reporting the dying process's VRAM as resident until the kernel reaps it.
@@ -134,15 +172,18 @@ def _wait_for_vram_release(
     for the new model, or (b) VRAM has visibly grown beyond the pre-stop
     baseline (the freed process has been reaped, so further waiting on THIS
     eviction is pointless — the caller should evict the next candidate).
+
+    VRAM is measured *only on the GPUs the model lands on* (via
+    ``tensor_split``); see ``_evict_for_vram``.
     """
     deadline = time.monotonic() + max(0.0, timeout_sec)
-    available = hardware_manager.available_vram_bytes()
+    available = hardware_manager.available_vram_bytes_for_split(tensor_split)
     while time.monotonic() < deadline:
-        available = hardware_manager.available_vram_bytes()
+        available = hardware_manager.available_vram_bytes_for_split(tensor_split)
         if available >= required_bytes or available > baseline:
             return available
         time.sleep(0.25)
-    return hardware_manager.available_vram_bytes()
+    return hardware_manager.available_vram_bytes_for_split(tensor_split)
 
 
 def _evict_for_vram(model) -> bool:
@@ -154,43 +195,59 @@ def _evict_for_vram(model) -> bool:
     surfaces a retryable insufficient-resources error rather than letting the
     llama-server start OOM into a 500).
 
+    **Tensor-split aware.**  Free VRAM is measured only on the GPUs the model
+    will actually land on (its ``tensor_split``), and eviction targets idle
+    servers that occupy those GPUs.  This is the crux of the on-demand-eviction
+    bug: most text models pin to GPU 0 (``tensor_split: "1,0,0"``), but the old
+    accounting summed ALL GPUs — so a packed 12 GB GPU 0 looked like ~50 GB
+    free (counting two idle 3090s), eviction returned early without freeing
+    anything, and the create OOM'd on GPU 0 into a 500.
+
     Eviction policy (see ``ServerCache.get_idle_lru_for_vram`` /
     ``VRAM_EVICT_MIN_RESIDENCY_SEC``):
       * only fully-idle servers (``use_count == 0``) — never one with
         in-flight requests;
       * only those idle past a short min-residency — avoids load/evict
         thrashing;
+      * only those that occupy a GPU the new model needs;
       * coldest (longest-idle) first.
 
     After each ``stop()`` we wait for the driver to actually reclaim the VRAM
     before deciding whether to evict the next candidate, so we free the
     minimum necessary.
     """
+    tensor_split = model.parameters.tensor_split if model.parameters else None
+    target_gpus = hardware_manager.gpus_for_tensor_split(tensor_split)
     required_bytes = _estimate_model_size(model)
-    available = hardware_manager.available_vram_bytes()
+    available = hardware_manager.available_vram_bytes_for_split(tensor_split)
     if available >= required_bytes:
         return True
 
     from app import server_cache
 
-    candidates = server_cache.get_idle_lru_for_vram(VRAM_EVICT_MIN_RESIDENCY_SEC)
+    all_idle = server_cache.get_idle_lru_for_vram(VRAM_EVICT_MIN_RESIDENCY_SEC)
+    # Only evict idle servers that occupy a GPU the NEW model needs — evicting
+    # one pinned to an unrelated card frees the wrong VRAM and the loop would
+    # spin without ever making room on the constrained GPU.
+    candidates = [e for e in all_idle if _server_overlaps_gpus(e, target_gpus)]
     if not candidates:
         logger.warning(
-            f"VRAM pressure for model {model.id}: need "
+            f"VRAM pressure for model {model.id} (gpus={target_gpus}): need "
             f"{required_bytes / 1024**3:.1f} GB, have "
-            f"{available / 1024**3:.1f} GB free, but NO idle server is "
-            f"eligible for eviction (all busy or within min-residency)."
+            f"{available / 1024**3:.1f} GB free on those GPU(s), but NO idle "
+            f"server on them is eligible for eviction (all busy, within "
+            f"min-residency, or pinned to other GPUs)."
         )
         return False
 
     for entry in candidates:
-        baseline = hardware_manager.available_vram_bytes()
+        baseline = hardware_manager.available_vram_bytes_for_split(tensor_split)
         logger.info(
-            f"VRAM pressure for model {model.id}: evicting idle LRU server "
-            f"{entry.server_id} (model {entry.model_id}, idle_since="
-            f"{entry.idle_since}) to free space "
-            f"(need {required_bytes / 1024**3:.1f} GB, "
-            f"have {baseline / 1024**3:.1f} GB)."
+            f"VRAM pressure for model {model.id} (gpus={target_gpus}): "
+            f"evicting idle LRU server {entry.server_id} "
+            f"(model {entry.model_id}, idle_since={entry.idle_since}) to free "
+            f"space (need {required_bytes / 1024**3:.1f} GB, "
+            f"have {baseline / 1024**3:.1f} GB on those GPU(s))."
         )
         if entry.manager is not None:
             try:
@@ -213,6 +270,7 @@ def _evict_for_vram(model) -> bool:
             pass
         available = _wait_for_vram_release(
             required_bytes,
+            tensor_split,
             baseline=baseline,
             timeout_sec=VRAM_EVICT_RELEASE_WAIT_SEC,
         )
@@ -339,7 +397,8 @@ async def create_server(request: Request, body: CreateServerRequest):
     # circuit breaker, so the request survives instead of taking the runner
     # offline for everyone.
     if not _evict_for_vram(model):
-        available_vram = hardware_manager.available_vram_bytes()
+        _ts = model.parameters.tensor_split if model.parameters else None
+        available_vram = hardware_manager.available_vram_bytes_for_split(_ts)
         model_size = _estimate_model_size(model)
         logger.warning(
             f"Insufficient VRAM for model {model.id} after eviction: "
