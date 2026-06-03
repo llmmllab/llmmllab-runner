@@ -187,8 +187,15 @@
     micro_batch_size: 1024
     n_gpu_layers: -1
     think: False
-    kv_on_cpu: True
-    # tensor_split: "0,1,1"
+    # KV ON GPU (was True) — nothing on host RAM.  This MoE is too big
+    # for one 24 GB 3090 (Q6 weights ~29.7 GB + ~7.6 GB on-GPU KV at
+    # 200k ≈ 37 GB), so it spreads across ALL THREE GPUs: with no
+    # tensor_split set, llama.cpp splits over every visible device
+    # (3060 12 GB + 2×3090 24 GB = 60 GB total), which holds the weights
+    # + KV with room to spare.  Models load one at a time, so the 27B is
+    # evicted first when this loads.
+    kv_on_cpu: False
+    # tensor_split: (unset) → split across all 3 GPUs
     main_gpu: 1
     # n_cpu_moe: 10
     parallel: 2
@@ -241,8 +248,12 @@
     micro_batch_size: 1024
     n_gpu_layers: -1
     think: False
-    kv_on_cpu: True
-    # tensor_split: "0,1,1"
+    # KV ON GPU (was True) — nothing on host RAM.  IQ4 weights (~17.3 GB)
+    # + 200k on-GPU KV (~7.8 GB) ≈ 25 GB exceeds one 24 GB 3090, so with
+    # no tensor_split set llama.cpp spreads it across ALL THREE visible
+    # GPUs (60 GB total).  Loads one at a time.
+    kv_on_cpu: False
+    # tensor_split: (unset) → split across all 3 GPUs
     main_gpu: 1
     spec_type_mtp: true
     spec_draft_n_max: 3
@@ -266,11 +277,11 @@
   # _estimate_model_size / _evict_for_vram on the shared 12 GB CUDA0.
   size: 6743680224
   details:
-    # Dropped from UD-Q6_K_XL to UD-Q5_K_XL 2026-05-28: the F32 mmproj
-    # (1.82 GB) plus Q6 model (8.76 GB) + workspace overflows the
-    # 12 GB RTX 2060 on the small runner, causing cudaMalloc OOM and
-    # SIGABRT during server startup.  Q5_K_XL drops model size to
-    # ~5.5 GB while keeping mmproj at F32 for vision quality.
+    # UD-Q5_K_XL weights + F16 mmproj, pinned to CUDA0 (12 GB RTX 3060).
+    # mmproj dropped F32 → F16 (2026-06-02): 1.82 GB → 0.92 GB.  KV is
+    # kept ON GPU (see parameters), so the F16 mmproj headroom matters.
+    # mmproj-F16.gguf downloaded from
+    # https://huggingface.co/unsloth/Qwen3.5-9B-GGUF
     format: gguf
     gguf_file: "/models/qwen3.5/9b/ud-q5_k_xl.gguf"
     family: qwen
@@ -283,19 +294,18 @@
     specialization: Text
     size: 6743680224
     original_ctx: 2048
-    clip_model_path: "/models/qwen3.5/9b/mmproj.gguf"
+    clip_model_path: "/models/qwen3.5/9b/mmproj-f16.gguf"
   parameters:
     # Big runner GPU layout:
-    #   CUDA0 = RTX 3060 (12 GB)  ← pinned here (the 3090s are reserved for Qwen3.6-27B)
-    #   CUDA1 = RTX 3090 (24 GB)
-    #   CUDA2 = RTX 3090 (24 GB)
-    # On a 12 GB device, the F32 mmproj (1.7 GB) only fits if the
-    # compute buffers stay small.  Default batch/ubatch (4096/4096)
-    # left no room and triggered cudaMalloc OOM at the mmproj-loading
-    # step.  Compute buffers scale with batch_size × ubatch_size, NOT
-    # num_ctx (KV is on CPU via kv_on_cpu: True), so we keep the full
-    # 200k context and cap the batch instead.  Matches .models.small.yaml.
-    num_ctx: 200000
+    #   CUDA0 = RTX 3060 (12 GB)  ← pinned here (3090s reserved for 27B)
+    #   CUDA1/2 = RTX 3090 (24 GB each)
+    # KV ON GPU (kv_on_cpu=False) — everything stays in VRAM, nothing on
+    # host RAM.  Models on this runner load one at a time, so this only
+    # needs to fit a SINGLE model on the 12 GB 3060: Q5 weights (~6.3 GB)
+    # + F16 mmproj (~0.92 GB) + 80k KV.  num_ctx 200000 → 80000 keeps the
+    # on-GPU KV within the 12 GB card (the required-minimum agent ctx);
+    # batch/ubatch stay compact (512/256).  Matches .models.small.yaml.
+    num_ctx: 80000
     repeat_last_n: 256
     repeat_penalty: 1.1
     temperature: 0.7
@@ -310,7 +320,7 @@
     micro_batch_size: 256
     n_gpu_layers: -1
     think: False
-    kv_on_cpu: True
+    kv_on_cpu: False
     parallel: 1
     tensor_split: "1,0,0"
     main_gpu: 0
@@ -325,33 +335,37 @@
   task: TextToText
   modified_at: "2026-04-03T17:42:00.692848+00:00"
   digest: 8f0cb1e8e058e45c7d9676fcd4da2f08eb62ff537da747a6ffc7157c1f6a5684
-  # Real on-disk size of ud-q6_k_xl.gguf (4.15 GB).  Was a bogus
+  # Real on-disk size of ud-q5_k_xl.gguf (3.25 GB).  Was a bogus
   # 771092736 (~0.77 GB), which broke _estimate_model_size /
-  # _evict_for_vram accounting on the shared 12 GB CUDA0.
-  #
-  # The big runner keeps Q6 here: it has 3 large GPUs (3060 + 2×3090)
-  # and the Q4 variant (ud-q_4_k_xl.gguf) is NOT present in this node's
-  # model store — only the small runner (.models.small.yaml) was
-  # dropped to Q4 to fix the single-2060 co-load OOM.
-  size: 4145548448
+  # _evict_for_vram accounting on the 12 GB CUDA0.
+  size: 3250869408
   details:
+    # UD-Q5_K_XL weights + F16 mmproj on CUDA0 (12 GB RTX 3060), matching
+    # .models.small.yaml so the 4B fits with KV ON GPU at 80k ctx.
+    # Both files downloaded from
+    # https://huggingface.co/unsloth/Qwen3.5-4B-GGUF
+    #   Qwen3.5-4B-UD-Q5_K_XL.gguf → ud-q5_k_xl.gguf
+    #   mmproj-F16.gguf            → mmproj-f16.gguf
     format: gguf
-    gguf_file: "/models/qwen3.5/4b/ud-q6_k_xl.gguf"
+    gguf_file: "/models/qwen3.5/4b/ud-q5_k_xl.gguf"
     family: qwen
     families:
       - qwen
     parameter_size: 752.4M
-    # NB: this label says Q4_K_XL but the gguf_file above is Q6_K_XL —
-    # pre-existing mislabel, left as-is to avoid an unrelated churn.
-    quantization_level: Q4_K_XL
+    quantization_level: Q5_K_XL
     precision: int4
     dtype: int4
     specialization: Text
-    size: 4145548448
+    size: 3250869408
     original_ctx: 2048
-    clip_model_path: "/models/qwen3.5/4b/mmproj.gguf"
+    clip_model_path: "/models/qwen3.5/4b/mmproj-f16.gguf"
   parameters:
-    num_ctx: 200000
+    # KV ON GPU (kv_on_cpu=False) — nothing on host RAM.  Single-model
+    # load on the 12 GB 3060: Q5 weights (~3.25 GB) + F16 mmproj
+    # (~0.67 GB) + 80k KV fit with room to spare.  num_ctx 200000 →
+    # 80000, parallel 4 → 1, batch/ubatch 4096 → 512/256 to keep the
+    # on-GPU KV + compute buffers compact.  Matches .models.small.yaml.
+    num_ctx: 80000
     repeat_last_n: 256
     repeat_penalty: 1.1
     temperature: 0.6
@@ -362,12 +376,12 @@
     min_p: 0.05
     max_tokens: 16384
     n_parts: -1
-    batch_size: 4096
-    micro_batch_size: 4096
+    batch_size: 512
+    micro_batch_size: 256
     n_gpu_layers: -1
     think: False
-    kv_on_cpu: True
-    parallel: 4
+    kv_on_cpu: False
+    parallel: 1
     kv_unified: True
     tensor_split: "1,0,0"
     # n_cpu_moe: 10
