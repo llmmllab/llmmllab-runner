@@ -1,151 +1,66 @@
-- id: Qwen3_5_9B
-  name: "Qwen3.5-9B"
-  model: "Qwen3.5-9B"
+# Small runner (lsnode-4, single 12 GB RTX 2060).
+#
+# Gemma 4 12B is the SOLE text-to-text model here — it replaced Qwen3.5-4B and
+# Qwen3.5-9B (2026-06-04). It does NOT co-reside with any other LLM (the 4B/9B
+# co-load was the source of the cudaMalloc OOM churn); gemma alone owns the card.
+- id: Gemma4_12B
+  name: "Gemma 4 12B"
+  model: "Gemma4_12B"
   task: TextToText
-  modified_at: "2026-04-03T17:42:00.692848+00:00"
-  digest: 8f0cb1e8e058e45c7d9676fcd4da2f08eb62ff537da747a6ffc7157c1f6a5684
-  # Real on-disk size of ud-q5_k_xl.gguf (6.74 GB).  Was a bogus
-  # 771092736 (~0.77 GB) copy-pasted from the 4B entry, which made
-  # _estimate_model_size / _evict_for_vram think the 9B needed <1 GB
-  # — so eviction under-freed and the 9B + 4B tried to co-load on the
-  # single 12 GB RTX 2060, triggering the cudaMalloc co-load OOM.
-  size: 6743680224
-  details:
-    # UD-Q5_K_XL weights + F16 mmproj on the single 12 GB RTX 2060.
-    # The mmproj was dropped F32 → F16 (2026-06-02): 1.82 GB → 0.92 GB
-    # (−0.90 GB VRAM) so the 9B + 4B co-reside on the 12 GB card with KV
-    # ON GPU at 80k context.  F16 mmproj keeps full vision quality
-    # (F16 is the precision the projector trains/serves at).
-    # Downloaded from https://huggingface.co/unsloth/Qwen3.5-9B-GGUF
-    #   mmproj-F16.gguf → mmproj-f16.gguf
-    format: gguf
-    gguf_file: "/models/qwen3.5/9b/ud-q5_k_xl.gguf"
-    family: qwen
-    families:
-      - qwen
-    parameter_size: 752.4M
-    quantization_level: Q5_K_XL
-    precision: int4
-    dtype: int4
-    specialization: Text
-    size: 6743680224
-    original_ctx: 2048
-    clip_model_path: "/models/qwen3.5/9b/mmproj-f16.gguf"
-  parameters:
-    # VRAM budget on the single 12 GB RTX 2060 with KV ON GPU
-    # (kv_on_cpu=False):
-    #   * weights  Q5      ~6.7 GB
-    #   * mmproj   F16     ~0.92 GB
-    #   * 80k KV (on GPU) + compute buffers   the remainder
-    # Keeping KV on GPU avoids the host-RAM pod-cgroup OOM that the
-    # prior kv_on_cpu=True + 200k ctx caused (a single load peaked
-    # ~9 GiB RSS and OOMKilled the pod).  num_ctx 200000 → 80000 is the
-    # required-minimum agent context; parallel stays 1 and batch/ubatch
-    # stay compact (512/256) so the on-GPU KV + buffers fit.
-    num_ctx: 80000
-    repeat_last_n: 256
-    repeat_penalty: 1.1
-    temperature: 0.7
-    seed: -1
-    num_predict: -1
-    top_k: 20
-    top_p: 0.95
-    min_p: 0.05
-    max_tokens: 16384
-    n_parts: -1
-    batch_size: 512
-    micro_batch_size: 256
-    n_gpu_layers: -1
-    think: False
-    # KV on GPU (was True): host-RAM offload OOM-killed the pod cgroup.
-    kv_on_cpu: False
-    parallel: 1
-    # n_cpu_moe: 10
-  pipeline: llama
-  lora_weights: []
-  provider: llama_cpp
-
-- id: Qwen3_5_4B
-  name: "Qwen3.5-4B"
-  model: "Qwen3.5-4B"
-  task: TextToText
-  # Degraded-mode default. When the big runner (27B) is unavailable, the API's
-  # default-model resolution (default_model_by_task -> model_by_task) would
-  # otherwise fall through to the FIRST text-to-text model this runner
-  # advertises — Qwen3.5-9B — silently pulling the heavy multimodal 9B into
-  # service whenever 27B is down/restarting. Marking 4B as this runner's default
-  # makes /v1/models/default return the light 4B, so the big-down fallback is 4B,
-  # not 9B. (The big runner keeps its own 27B default; default_model_by_task
-  # queries the big endpoint first, so 27B still wins whenever it is up.)
+  # Small-runner default. The big runner keeps its own 27B default and is queried
+  # first by default_model_by_task, so 27B still wins whenever it is up; this only
+  # sets the big-down fallback to gemma (a sane light model) instead of leaking a
+  # heavy model. Replaces the prior 4B-as-default.
   default: true
-  modified_at: "2026-04-03T17:42:00.692848+00:00"
-  digest: 8f0cb1e8e058e45c7d9676fcd4da2f08eb62ff537da747a6ffc7157c1f6a5684
-  # Real on-disk size of ud-q5_k_xl.gguf (3.25 GB).  Was a bogus
-  # 771092736 (~0.77 GB), which broke VRAM accounting in
-  # _estimate_model_size / _evict_for_vram (see 9B note above).
-  size: 3250869408
+  modified_at: "2026-06-04T00:00:00+00:00"
+  digest: "0000000000000000000000000000000000000000000000000000000000000004"
+  # Real on-disk size of gemma-4-12b-it-UD-Q4_K_XL.gguf (7.37 GB). Accurate size
+  # matters for _estimate_model_size / _evict_for_vram VRAM accounting.
+  size: 7366421920
   details:
-    # Dropped from UD-Q6_K_XL → UD-Q5_K_XL and mmproj F32 → F16
-    # (2026-06-02) to shrink the 4B's VRAM footprint so the 9B + 4B
-    # co-reside on the single 12 GB RTX 2060 with KV ON GPU
-    # (kv_on_cpu=False) at the required 80k context:
-    #   * weights  4.15 GB (Q6) → 3.25 GB (Q5)   −0.90 GB
-    #   * mmproj   1.33 GB (F32) → 0.67 GB (F16)  −0.66 GB
-    #   = −1.56 GB, which (with the 9B already at Q5 + F16 below) brings
-    #   both models' resident set under 12 GB so neither cudaMalloc-OOMs
-    #   on co-load.
-    #
-    # Both files downloaded from the upstream Unsloth GGUF repo
-    # (general.repo_url in the original gguf):
-    #   https://huggingface.co/unsloth/Qwen3.5-4B-GGUF
-    #     Qwen3.5-4B-UD-Q5_K_XL.gguf  → ud-q5_k_xl.gguf
-    #     mmproj-F16.gguf             → mmproj-f16.gguf
     format: gguf
-    gguf_file: "/models/qwen3.5/4b/ud-q5_k_xl.gguf"
-    family: qwen
+    gguf_file: "/models/gemma4/12b/gemma-4-12b-it-UD-Q4_K_XL.gguf"
+    family: gemma4
     families:
-      - qwen
-    parameter_size: 752.4M
-    quantization_level: Q5_K_XL
+      - gemma4
+    parameter_size: 11.95B
+    quantization_level: Q4_K_XL
     precision: int4
     dtype: int4
     specialization: Text
-    size: 3250869408
+    size: 7366421920
     original_ctx: 2048
-    clip_model_path: "/models/qwen3.5/4b/mmproj-f16.gguf"
+    # Separate F16 multimodal projector (image-text-to-text).
+    clip_model_path: "/models/gemma4/12b/mmproj-F16.gguf"
   parameters:
-    # VRAM-conservative profile for the small runner's single 12 GB
-    # RTX 2060.  KV is kept ON GPU (kv_on_cpu=False) — offloading it to
-    # host RAM was the prior cause of the pod-cgroup OOM, and the Q5 +
-    # F16 footprint cut above leaves room for the KV in VRAM instead:
-    #   * num_ctx 200000 → 80000   — 80k is the required-minimum agent
-    #     context; the KV now lives in VRAM, so it must fit alongside the
-    #     weights + mmproj on the 12 GB card.
-    #   * parallel 4 → 1           — one KV slot; 4 slots × 80k would
-    #     quadruple the on-GPU KV for no benefit on a single-user agent.
-    #   * batch/ubatch 4096 → 512/256 — compact compute buffers, matching
-    #     the 9B and leaving headroom for weights + mmproj + KV.
-    num_ctx: 80000
-    repeat_last_n: 256
-    repeat_penalty: 1.1
-    temperature: 0.6
+    # VRAM budget on the single 12 GB RTX 2060, KV kept ON GPU
+    # (kv_on_cpu=False — host-RAM offload previously OOM-killed the pod cgroup):
+    #   * weights  Q4_K_XL  ~7.37 GB
+    #   * mmproj   F16       ~0.12 GB
+    #   * q8 KV (on GPU) + compute buffers   the remaining ~4 GB
+    # num_ctx is held at 65536 (conservative) so the q8 KV fits alongside the
+    # ~7.5 GB weights; kv_unified lets the parallel slots share ONE pool (each
+    # slot can use the full ctx, no fragmentation), so 2 light agents
+    # (main/admin/delegator) can run concurrently without doubling KV.
+    # If a load OOMs, drop num_ctx (e.g. 49152/32768) before touching parallel.
+    num_ctx: 65536
+    repeat_last_n: 64
+    repeat_penalty: 1.0
+    temperature: 1.0
     seed: -1
     num_predict: -1
-    top_k: 20
-    top_p: 0.90
-    min_p: 0.05
+    top_k: 64
+    top_p: 0.95
+    min_p: 0.0
     max_tokens: 16384
     n_parts: -1
     batch_size: 512
     micro_batch_size: 256
     n_gpu_layers: -1
     think: False
-    # KV on GPU (was True): host-RAM offload OOM-killed the pod cgroup;
-    # the Q5 + F16 footprint cut leaves room to keep the 80k KV in VRAM.
     kv_on_cpu: False
-    parallel: 1
+    parallel: 2
     kv_unified: True
-    # n_cpu_moe: 10
   pipeline: llama
   lora_weights: []
   provider: llama_cpp
