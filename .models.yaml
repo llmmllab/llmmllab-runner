@@ -271,6 +271,62 @@
   lora_weights: []
   provider: llama_cpp
 
+- id: Gemma4_31B
+  name: "Gemma 4 31B"
+  model: "Gemma4_31B"
+  task: TextToText
+  modified_at: "2026-06-04T00:00:00+00:00"
+  digest: "0000000000000000000000000000000000000000000000000000000000000031"
+  # Real on-disk size of gemma-4-31B-it-UD-Q6_K_XL.gguf (25.6 GB) — accurate for
+  # VRAM accounting in _estimate_model_size / _evict_for_vram.
+  size: 27521336320
+  details:
+    format: gguf
+    gguf_file: "/models/gemma4/31b/gemma-4-31B-it-UD-Q6_K_XL.gguf"
+    family: gemma4
+    families:
+      - gemma4
+    parameter_size: 31B
+    quantization_level: Q6_K_XL
+    precision: int6
+    dtype: int6
+    specialization: Text
+    size: 27521336320
+    original_ctx: 2048
+    # gemma-4 vision projector (gemma4uv) — needs the master llama.cpp pinned in
+    # vendors/llama.cpp (same build that serves the 12B's mmproj).
+    clip_model_path: "/models/gemma4/31b/mmproj-F16.gguf"
+  parameters:
+    # Pinned to the TWO RTX 3090s only (CUDA1+CUDA2, 24 GB each = 48 GB) via
+    # tensor_split "0,1,1" — nothing on the 12 GB 3060 (CUDA0). UD-Q6_K_XL weights
+    # (~25.6 GB) + mmproj-F16 (~1.12 GB) + q8 KV ON GPU. num_ctx 200000 as
+    # requested; 200k q8 KV is ~19 GB, so weights+mmproj+KV (~46 GB) is near the
+    # 48 GB ceiling — the runner's --fit auto-reduces the served ctx if it would
+    # overflow, so verify the effective ctx (fit-ctx) in the load log.
+    num_ctx: 200000
+    repeat_last_n: 64
+    repeat_penalty: 1.0
+    temperature: 1.0
+    seed: -1
+    num_predict: -1
+    top_k: 64
+    top_p: 0.95
+    min_p: 0.0
+    max_tokens: 16384
+    n_parts: -1
+    batch_size: 512
+    micro_batch_size: 256
+    n_gpu_layers: -1
+    think: False
+    kv_on_cpu: False
+    parallel: 1
+    kv_unified: True
+    tensor_split: "0,1,1"
+    main_gpu: 2
+  pipeline: llama
+  lora_weights: []
+  provider: llama_cpp
+
 - id: Qwen3_5_9B
   name: "Qwen3.5-9B"
   model: "Qwen3.5-9B"
