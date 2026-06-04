@@ -271,6 +271,129 @@
   lora_weights: []
   provider: llama_cpp
 
+- id: Qwen3_5_9B
+  name: "Qwen3.5-9B"
+  model: "Qwen3.5-9B"
+  task: TextToText
+  modified_at: "2026-04-03T17:42:00.692848+00:00"
+  digest: 8f0cb1e8e058e45c7d9676fcd4da2f08eb62ff537da747a6ffc7157c1f6a5684
+  # Real on-disk size of ud-q5_k_xl.gguf (6.74 GB).  Was a bogus
+  # 771092736 (~0.77 GB), which broke VRAM accounting in
+  # _estimate_model_size / _evict_for_vram on the shared 12 GB CUDA0.
+  size: 6743680224
+  details:
+    # UD-Q5_K_XL weights + F16 mmproj, pinned to CUDA0 (12 GB RTX 3060).
+    # mmproj dropped F32 → F16 (2026-06-02): 1.82 GB → 0.92 GB.  KV is
+    # kept ON GPU (see parameters), so the F16 mmproj headroom matters.
+    # mmproj-F16.gguf downloaded from
+    # https://huggingface.co/unsloth/Qwen3.5-9B-GGUF
+    format: gguf
+    gguf_file: "/models/qwen3.5/9b/ud-q5_k_xl.gguf"
+    family: qwen
+    families:
+      - qwen
+    parameter_size: 752.4M
+    quantization_level: Q5_K_XL
+    precision: int4
+    dtype: int4
+    specialization: Text
+    size: 6743680224
+    original_ctx: 2048
+    clip_model_path: "/models/qwen3.5/9b/mmproj-f16.gguf"
+  parameters:
+    # Big runner GPU layout:
+    #   CUDA0 = RTX 3060 (12 GB)  ← pinned here (3090s reserved for 27B)
+    #   CUDA1/2 = RTX 3090 (24 GB each)
+    # KV ON GPU (kv_on_cpu=False) — everything stays in VRAM, nothing on
+    # host RAM.  Models on this runner load one at a time, so this only
+    # needs to fit a SINGLE model on the 12 GB 3060: Q5 weights (~6.3 GB)
+    # + F16 mmproj (~0.92 GB) + 80k KV.  num_ctx 200000 → 80000 keeps the
+    # on-GPU KV within the 12 GB card (the required-minimum agent ctx);
+    # batch/ubatch stay compact (512/256).  Matches .models.small.yaml.
+    num_ctx: 80000
+    repeat_last_n: 256
+    repeat_penalty: 1.1
+    temperature: 0.7
+    seed: -1
+    num_predict: -1
+    top_k: 20
+    top_p: 0.95
+    min_p: 0.05
+    max_tokens: 16384
+    n_parts: -1
+    batch_size: 512
+    micro_batch_size: 256
+    n_gpu_layers: -1
+    think: False
+    kv_on_cpu: False
+    parallel: 1
+    tensor_split: "1,0,0"
+    main_gpu: 0
+    # n_cpu_moe: 10
+  pipeline: llama
+  lora_weights: []
+  provider: llama_cpp
+
+- id: Qwen3_5_4B
+  name: "Qwen3.5-4B"
+  model: "Qwen3.5-4B"
+  task: TextToText
+  modified_at: "2026-04-03T17:42:00.692848+00:00"
+  digest: 8f0cb1e8e058e45c7d9676fcd4da2f08eb62ff537da747a6ffc7157c1f6a5684
+  # Real on-disk size of ud-q5_k_xl.gguf (3.25 GB).  Was a bogus
+  # 771092736 (~0.77 GB), which broke _estimate_model_size /
+  # _evict_for_vram accounting on the 12 GB CUDA0.
+  size: 3250869408
+  details:
+    # UD-Q5_K_XL weights + F16 mmproj on CUDA0 (12 GB RTX 3060), matching
+    # .models.small.yaml so the 4B fits with KV ON GPU at 80k ctx.
+    # Both files downloaded from
+    # https://huggingface.co/unsloth/Qwen3.5-4B-GGUF
+    #   Qwen3.5-4B-UD-Q5_K_XL.gguf → ud-q5_k_xl.gguf
+    #   mmproj-F16.gguf            → mmproj-f16.gguf
+    format: gguf
+    gguf_file: "/models/qwen3.5/4b/ud-q5_k_xl.gguf"
+    family: qwen
+    families:
+      - qwen
+    parameter_size: 752.4M
+    quantization_level: Q5_K_XL
+    precision: int4
+    dtype: int4
+    specialization: Text
+    size: 3250869408
+    original_ctx: 2048
+    clip_model_path: "/models/qwen3.5/4b/mmproj-f16.gguf"
+  parameters:
+    # KV ON GPU (kv_on_cpu=False) — nothing on host RAM.  Single-model
+    # load on the 12 GB 3060: Q5 weights (~3.25 GB) + F16 mmproj
+    # (~0.67 GB) + 80k KV fit with room to spare.  num_ctx 200000 →
+    # 80000, parallel 4 → 1, batch/ubatch 4096 → 512/256 to keep the
+    # on-GPU KV + compute buffers compact.  Matches .models.small.yaml.
+    num_ctx: 80000
+    repeat_last_n: 256
+    repeat_penalty: 1.1
+    temperature: 0.6
+    seed: -1
+    num_predict: -1
+    top_k: 20
+    top_p: 0.90
+    min_p: 0.05
+    max_tokens: 16384
+    n_parts: -1
+    batch_size: 512
+    micro_batch_size: 256
+    n_gpu_layers: -1
+    think: False
+    kv_on_cpu: False
+    parallel: 1
+    kv_unified: True
+    tensor_split: "1,0,0"
+    # n_cpu_moe: 10
+  pipeline: llama
+  lora_weights: []
+  provider: llama_cpp
+
 # ---------------------------------------------------------------------------
 # Qwen-Image-2512 (stable-diffusion.cpp / sd-server)
 #
