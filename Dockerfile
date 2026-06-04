@@ -40,6 +40,15 @@ RUN ln -sf /usr/local/cuda/lib64/stubs/libcuda.so /usr/local/cuda/lib64/stubs/li
 # Copy the pinned submodule source instead of cloning at build time. Using the
 # submodule means the version that gets baked into the image always matches
 # what was committed to git — no more "did CI grab a fresh tag?" surprises.
+#
+# Cache-bust keyed on the llama.cpp submodule commit. Docker was serving the
+# COPY+compile layers from cache even after the submodule was bumped (the COPY
+# cache key didn't reflect the new content on the self-hosted builder), so a
+# bumped llama.cpp never actually recompiled. Passing --build-arg LLAMA_SHA=<sha>
+# (= `git -C vendors/llama.cpp rev-parse HEAD`) invalidates these layers ONLY
+# when the submodule SHA changes, forcing a recompile then (and only then).
+ARG LLAMA_SHA=unknown
+RUN echo "Building llama.cpp at submodule ${LLAMA_SHA}"
 COPY vendors/llama.cpp /llama.cpp
 
 WORKDIR /llama.cpp

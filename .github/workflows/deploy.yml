@@ -42,8 +42,12 @@ jobs:
 
           echo "Building llmmllab-runner (SHA: $SHORT_SHA)..."
 
-          # Build Docker image
-          docker build -t ${REGISTRY}/${IMAGE}:${SHA} .
+          # Build Docker image. LLAMA_SHA busts the llama.cpp COPY+compile cache
+          # when (and only when) the submodule is bumped, so a new llama.cpp
+          # actually recompiles instead of serving a stale cached layer.
+          LLAMA_SHA=$(git -C vendors/llama.cpp rev-parse HEAD)
+          echo "llama.cpp submodule SHA: ${LLAMA_SHA}"
+          docker build --build-arg LLAMA_SHA=${LLAMA_SHA} -t ${REGISTRY}/${IMAGE}:${SHA} .
 
           # Push image
           docker push ${REGISTRY}/${IMAGE}:${SHA}
