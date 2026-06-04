@@ -1,9 +1,18 @@
 # Gemma 4 12B is the active small-runner model + default (replaced 4B/9B as the
 # agents' light model 2026-06-04). The Qwen 4B/9B entries below are KEPT (not the
-# default, no agent points at them) so we can swap back at any time. gemma-4 is
-# multimodal — its vision/audio projector type is "gemma4uv", which requires the
-# llama.cpp master pinned in vendors/llama.cpp (2026-06). It owns the 12 GB card
-# alone (no co-residency); 4B/9B only load if manually swapped in.
+# default, no agent points at them) so we can swap back at any time. It owns the
+# 12 GB card alone (no co-residency); 4B/9B only load if manually swapped in.
+#
+# TEXT-ONLY for now: gemma-4's vision/audio projector type is "gemma4uv", which
+# the DEPLOYED llama-server does NOT support (clip_init: "unknown projector
+# type: gemma4uv"). vendors/llama.cpp IS bumped to master 7c158fbb (which adds
+# gemma4uv), but the CI/self-hosted runner did not actually recompile it (the
+# deployed binary still reports no gemma4uv — likely a sticky submodule checkout
+# or cached build layer). So clip_model_path is omitted to let the text model
+# load. TO ENABLE VISION: fix the runner's submodule rebuild, confirm
+# `llama-server` contains gemma4uv, re-add clip_model_path below, and verify the
+# 27B/35B still load on the new binary (the master bump can change arg-builder
+# flags). Being non-multimodal now, gemma also gets working slot-save + cache_reuse.
 - id: Gemma4_12B
   name: "Gemma 4 12B"
   model: "Gemma4_12B"
@@ -26,7 +35,6 @@
     specialization: Text
     size: 7366421920
     original_ctx: 2048
-    clip_model_path: "/models/gemma4/12b/mmproj-F16.gguf"
   parameters:
     # 12 GB RTX 2060, KV ON GPU (kv_on_cpu=False — host-RAM offload OOM-killed
     # the pod cgroup before): ~7.37 GB weights + ~0.12 GB mmproj-F16 + q8 KV.
