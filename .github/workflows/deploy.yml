@@ -18,6 +18,20 @@ jobs:
           # fail with "no source files were specified".
           submodules: recursive
 
+      # actions/checkout's submodule step does NOT force an already-checked-out
+      # submodule to the newly-committed SHA on a self-hosted runner with a
+      # persistent workspace — so a bumped vendors/llama.cpp can stay at the old
+      # commit, the Dockerfile's `COPY vendors/llama.cpp` cache-hits, and the old
+      # binary gets baked in (this silently shipped a llama.cpp without gemma4
+      # vision support, 2026-06). Force the submodules to the committed gitlink.
+      - name: Force submodules to the committed SHA
+        run: |
+          set -euo pipefail
+          git submodule sync --recursive
+          git submodule update --init --force --recursive
+          echo "vendors/llama.cpp -> $(git -C vendors/llama.cpp rev-parse HEAD)"
+          grep -rl "gemma4uv" vendors/llama.cpp/tools/mtmd >/dev/null && echo "llama.cpp HAS gemma4uv support" || echo "WARN: llama.cpp lacks gemma4uv"
+
       - name: Build & Deploy
         run: |
           set -euo pipefail
