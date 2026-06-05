@@ -152,6 +152,22 @@ class LlamaCppArgumentBuilder:
                 "repeat_last_n": (
                     params.repeat_last_n if params.repeat_last_n is not None else 256
                 ),
+                "dry_multiplier": (
+                    params.dry_multiplier if params.dry_multiplier is not None else 0.0
+                ),
+                "dry_base": (
+                    params.dry_base if params.dry_base is not None else 1.75
+                ),
+                "dry_allowed_length": (
+                    params.dry_allowed_length
+                    if params.dry_allowed_length is not None
+                    else 2
+                ),
+                "dry_penalty_last_n": (
+                    params.dry_penalty_last_n
+                    if params.dry_penalty_last_n is not None
+                    else 0
+                ),
                 "n_gpu_layers": (
                     params.n_gpu_layers if params.n_gpu_layers is not None else -1
                 ),

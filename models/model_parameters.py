@@ -304,6 +304,61 @@ class ModelParameters(BaseModel):
     """Mirostat sampler mode (llama.cpp --mirostat).  0 = disabled."""
 
     # ------------------------------------------------------------------
+    # DRY (Don't Repeat Yourself) sampler.
+    #
+    # Detects repeated N-gram *sequences* (not just individual tokens)
+    # and penalises continuations that would extend the pattern.  Unlike
+    # repeat_penalty — which only catches exact token repetition — DRY
+    # catches semantically-drifting loops where each successive token is
+    # different but follows a repeating structural pattern (e.g. word-
+    # association cascades: "shoes boots sneakers loafers sandals …").
+    # ------------------------------------------------------------------
+    dry_multiplier: Annotated[
+        Optional[float],
+        Field(
+            default=None,
+            description="DRY sampling multiplier (llama.cpp --dry-multiplier).  0.0 = disabled.  "
+            "Higher values penalise repeated sequences more aggressively.  Start around 0.8.",
+            ge=0.0,
+        ),
+    ] = None
+    """DRY sampling multiplier.  0.0 = disabled."""
+
+    dry_base: Annotated[
+        Optional[float],
+        Field(
+            default=None,
+            description="DRY sampling base (llama.cpp --dry-base).  Exponential base for the "
+            "penalty curve — longer repeated sequences are penalised as base^(length - allowed).  "
+            "Must be >= 1.0.  Default 1.75.",
+            ge=1.0,
+        ),
+    ] = None
+    """DRY sampling base (exponential penalty curve)."""
+
+    dry_allowed_length: Annotated[
+        Optional[int],
+        Field(
+            default=None,
+            description="Minimum N-gram length before DRY kicks in (llama.cpp --dry-allowed-length).  "
+            "Sequences shorter than this are not penalised.  Default 2.",
+            ge=0,
+        ),
+    ] = None
+    """Minimum N-gram length before DRY penalty applies."""
+
+    dry_penalty_last_n: Annotated[
+        Optional[int],
+        Field(
+            default=None,
+            description="How many recent tokens DRY looks back through for repeated sequences "
+            "(llama.cpp --dry-penalty-last-n).  0 = disable, -1 = full context.  Default 0 (off).",
+            ge=-1,
+        ),
+    ] = None
+    """DRY lookback window.  0 = off, -1 = full context."""
+
+    # ------------------------------------------------------------------
     # stable-diffusion.cpp / sd-server sampling defaults.
     #
     # These travel in the request body to ``/sdapi/v1/txt2img`` (or
