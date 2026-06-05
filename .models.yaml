@@ -27,13 +27,13 @@
     # Anything <1.0 REWARDS repetition (see llama-sampler.cpp:2690–2694),
     # which manifests as runaway think loops and repeated tool-call fences
     # on Qwen3.  Keep this >= 1.0.
-    repeat_penalty: 1.1
-    temperature: 0.6
+    repeat_penalty: 1.2
+    temperature: 0.65
     seed: -1
     num_predict: -1
     top_k: 20
     top_p: 0.90
-    min_p: 0.01
+    min_p: 0.05
     max_tokens: 65536
     n_parts: -1
     # batch=4096, ubatch=2048 widens the prompt-processing kernel from
@@ -306,20 +306,20 @@
     num_ctx: 200000
     repeat_last_n: 64
     repeat_penalty: 1.0
-    temperature: 1.0
+    temperature: 0.6
     seed: -1
     num_predict: -1
     top_k: 64
     top_p: 0.95
-    min_p: 0.0
+    min_p: 0.05
     max_tokens: 16384
     n_parts: -1
-    batch_size: 512
-    micro_batch_size: 256
+    batch_size: 4096
+    micro_batch_size: 2048
     n_gpu_layers: -1
-    think: False
+    think: True
     kv_on_cpu: False
-    parallel: 1
+    parallel: 4
     kv_unified: True
     tensor_split: "0,1,1"
     main_gpu: 2
