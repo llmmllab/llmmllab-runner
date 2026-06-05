@@ -30,7 +30,16 @@
     specialization: Text
     size: 7366421920
     original_ctx: 2048
-    clip_model_path: "/models/gemma4/12b/mmproj-F16.gguf"
+    # TEXT-ONLY (no clip_model_path). The gemma-4 vision projector (gemma4uv)
+    # needs vendors/llama.cpp at master (7c158fbb), but that submodule gitlink
+    # keeps getting reverted to 549b9d84 by casual `git commit -a` in a stale
+    # checkout (happened overnight 2026-06-05) — which rebuilds a no-gemma4uv
+    # binary, the mmproj load FAILS, gemma-12b won't start, and every
+    # main/spec-designer cron errors "couldn't generate a response". This is the
+    # agents' light TEXT model, so drop the mmproj: it loads on ANY binary and
+    # survives submodule reverts. To restore 12B vision: re-pin vendors/llama.cpp
+    # to 7c158fbb, keep it pinned (don't `git commit -a` with a stale submodule),
+    # then re-add this clip_model_path line.
   parameters:
     # 12 GB RTX 2060, KV ON GPU (kv_on_cpu=False — host-RAM offload OOM-killed
     # the pod cgroup before): ~7.37 GB weights + ~0.12 GB mmproj-F16 + q8 KV.
