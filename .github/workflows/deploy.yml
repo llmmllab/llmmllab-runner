@@ -30,7 +30,14 @@ jobs:
           git submodule sync --recursive
           git submodule update --init --force --recursive
           echo "vendors/llama.cpp -> $(git -C vendors/llama.cpp rev-parse HEAD)"
-          grep -rl "gemma4uv" vendors/llama.cpp/tools/mtmd >/dev/null && echo "llama.cpp HAS gemma4uv support" || echo "WARN: llama.cpp lacks gemma4uv"
+          if grep -rl "gemma4uv" vendors/llama.cpp/tools/mtmd >/dev/null 2>&1; then
+            echo "llama.cpp HAS gemma4uv support"
+          else
+            echo "::error::vendors/llama.cpp is checked out at $(git -C vendors/llama.cpp rev-parse HEAD) which LACKS gemma4uv support."
+            echo "This usually means a 'git commit -a' in a stale checkout reverted the submodule gitlink."
+            echo "Fix: cd vendors/llama.cpp && git checkout <sha-with-gemma4uv> && cd ../.. && git add vendors/llama.cpp && git commit"
+            exit 1
+          fi
 
       - name: Build & Deploy
         run: |
