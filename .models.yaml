@@ -28,23 +28,32 @@
     # which manifests as runaway think loops and repeated tool-call fences
     # on Qwen3.  Keep this >= 1.0.
     repeat_penalty: 1.15
-    temperature: 0.65
+    # temperature 0.65 -> 0.60: word-association cascades are a low-temperature-
+    # tail phenomenon; 0.60 (bottom of Qwen3's recommended thinking range
+    # 0.6-0.7) reduces drift without flattening reasoning.
+    temperature: 0.60
     seed: -1
     num_predict: -1
-    top_k: 20
+    # top_k 20 -> 12: narrows the candidate pool so the model can't reach for
+    # the long list of "semantically adjacent" words that feed the cascade.
+    top_k: 12
     top_p: 0.95
     # min_p: probability floor — tokens below min_p * max_prob are excluded.
-    # 0.00 lets ANY token through (no floor), which allowed the model to
-    # drift into word-association cascades.  0.03 cuts the long tail while
-    # preserving creative output.
-    min_p: 0.03
+    # 0.00 let ANY token through (no floor), which allowed the model to drift
+    # into word-association cascades.  Bumped 0.03 -> 0.06: the cascade words
+    # are lower-probability than the correct continuation, so a higher floor
+    # cuts them while preserving genuine creative output.
+    min_p: 0.06
     # DRY (Don't Repeat Yourself) sampler — catches N-gram SEQUENCE
     # repetition that repeat_penalty misses (each word different but
-    # pattern repeating).  Targets the word-association loops.
-    dry_multiplier: 0.8
+    # pattern repeating).  Bumped harder: multiplier 0.8 -> 1.2 and lookback
+    # 512 -> 2048 so a building cascade is penalised across a longer window.
+    # NOTE: pure unigram cascades (each word unique) are NOT catchable by DRY
+    # or repeat_penalty — min_p/top_k/temperature are the real levers there.
+    dry_multiplier: 1.2
     dry_base: 1.75
     dry_allowed_length: 2
-    dry_penalty_last_n: 512
+    dry_penalty_last_n: 2048
     max_tokens: 65536
     n_parts: -1
     # batch=4096, ubatch=2048 widens the prompt-processing kernel from
@@ -124,13 +133,14 @@
     temperature: 0.6
     seed: -1
     num_predict: -1
-    top_k: 20
+    # See Qwen3_6_27B above for the rationale on these anti-cascade bumps.
+    top_k: 12
     top_p: 0.90
-    min_p: 0.03
-    dry_multiplier: 0.8
+    min_p: 0.06
+    dry_multiplier: 1.2
     dry_base: 1.75
     dry_allowed_length: 2
-    dry_penalty_last_n: 512
+    dry_penalty_last_n: 2048
     max_tokens: 65536
     n_parts: -1
     batch_size: 2048
