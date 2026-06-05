@@ -27,13 +27,13 @@
     # Anything <1.0 REWARDS repetition (see llama-sampler.cpp:2690–2694),
     # which manifests as runaway think loops and repeated tool-call fences
     # on Qwen3.  Keep this >= 1.0.
-    repeat_penalty: 1.2
+    repeat_penalty: 1.15
     temperature: 0.65
     seed: -1
     num_predict: -1
     top_k: 20
-    top_p: 0.90
-    min_p: 0.05
+    top_p: 0.95
+    min_p: 0.00
     max_tokens: 65536
     n_parts: -1
     # batch=4096, ubatch=2048 widens the prompt-processing kernel from
