@@ -152,6 +152,21 @@ class LlamaCppArgumentBuilder:
                 "repeat_last_n": (
                     params.repeat_last_n if params.repeat_last_n is not None else 256
                 ),
+                # Core sampler knobs. These were NOT being passed through any
+                # layer (argument builder, the API's ChatOpenAI body, or the
+                # proxy's _inject_slot_body), so llama-server silently fell back
+                # to its compiled-in defaults (temp 0.80, top_k 40, top_p 0.95,
+                # min_p 0.05) — REGARDLESS of .models.yaml. That hot default
+                # (temp 0.80) is the fuel for Qwen3.6's word-association
+                # cascades. Wiring them here as --temp/--top-k/--top-p/--min-p
+                # makes .models.yaml authoritative as the server-side default;
+                # a per-request body value still overrides when a caller sends
+                # one. None values are dropped by _config_to_args, preserving
+                # llama.cpp defaults for any model that omits a knob.
+                "temp": params.temperature,
+                "top_k": params.top_k,
+                "top_p": params.top_p,
+                "min_p": params.min_p,
                 "dry_multiplier": (
                     params.dry_multiplier if params.dry_multiplier is not None else 0.0
                 ),
