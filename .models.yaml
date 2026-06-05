@@ -19,7 +19,16 @@
     specialization: Text
     size: 35325163744
     original_ctx: 2048
-    clip_model_path: /models/qwen3.6/27b/mmproj.gguf
+    # mmproj REMOVED for the text workload. Loading the vision projector forced
+    # llama-server into multimodal mode, which: (1) force-disables slot KV
+    # save/restore (see 78df477), cache_reuse, AND ctx_shift, and (2) routes ALL
+    # text generation through the less-tested multimodal update_slots path
+    # (the "Qwen-VL requires >=1024 image tokens" warning confirms text ran the
+    # vision path). This model is specialization: Text — it doesn't need vision.
+    # Dropping the projector frees ~1.7 GiB VRAM and restores the standard,
+    # well-tested text generation + KV path. Re-add a dedicated VL model if
+    # image input is ever needed.
+    # clip_model_path: /models/qwen3.6/27b/mmproj.gguf
   parameters:
     num_ctx: 200000
     repeat_last_n: 128
