@@ -42,7 +42,7 @@
     # 0.6-0.7) reduces drift without flattening reasoning.
     temperature: 0.60
     seed: -1
-    num_predict: -1
+    num_predict: 16384
     # top_k 20 -> 12: narrows the candidate pool so the model can't reach for
     # the long list of "semantically adjacent" words that feed the cascade.
     top_k: 12
@@ -63,8 +63,6 @@
     dry_base: 1.75
     dry_allowed_length: 2
     dry_penalty_last_n: 2048
-    max_tokens: 65536
-    n_parts: -1
     # batch=4096, ubatch=2048 widens the prompt-processing kernel from
     # the llama.cpp server defaults (2048/512). Single larger kernels
     # absorb better into Ampere SMs; the HF MoE-offload guide flags
@@ -146,7 +144,7 @@
     repeat_penalty: 1.15
     temperature: 0.60
     seed: -1
-    num_predict: -1
+    num_predict: 16384
     top_k: 12
     top_p: 0.95
     min_p: 0.06
@@ -154,8 +152,6 @@
     dry_base: 1.75
     dry_allowed_length: 2
     dry_penalty_last_n: 2048
-    max_tokens: 65536
-    n_parts: -1
     batch_size: 4096
     micro_batch_size: 2048
     cache_ram: 4096
@@ -200,7 +196,7 @@
     repeat_penalty: 1.1
     temperature: 0.6
     seed: -1
-    num_predict: -1
+    num_predict: 16384
     # See Qwen3_6_27B above for the rationale on these anti-cascade bumps.
     top_k: 12
     top_p: 0.90
@@ -209,8 +205,6 @@
     dry_base: 1.75
     dry_allowed_length: 2
     dry_penalty_last_n: 2048
-    max_tokens: 65536
-    n_parts: -1
     batch_size: 2048
     micro_batch_size: 512
     n_gpu_layers: -1
@@ -275,12 +269,10 @@
     repeat_penalty: 1.1
     temperature: 0.7
     seed: -1
-    num_predict: -1
+    num_predict: 16384
     top_k: 20
     top_p: 0.95
     min_p: 0.05
-    max_tokens: -1
-    n_parts: -1
     batch_size: 2048
     micro_batch_size: 1024
     n_gpu_layers: -1
@@ -336,12 +328,10 @@
     repeat_penalty: 1.1
     temperature: 0.7
     seed: -1
-    num_predict: -1
+    num_predict: 16384
     top_k: 20
     top_p: 0.95
     min_p: 0.05
-    max_tokens: -1
-    n_parts: -1
     batch_size: 2048
     micro_batch_size: 1024
     n_gpu_layers: -1
@@ -401,12 +391,10 @@
     repeat_penalty: 1.0
     temperature: 0.6
     seed: -1
-    num_predict: -1
+    num_predict: 16384
     top_k: 64
     top_p: 0.95
     min_p: 0.05
-    max_tokens: 16384
-    n_parts: -1
     batch_size: 4096
     micro_batch_size: 2048
     n_gpu_layers: -1
@@ -464,12 +452,10 @@
     repeat_penalty: 1.1
     temperature: 0.7
     seed: -1
-    num_predict: -1
+    num_predict: 16384
     top_k: 20
     top_p: 0.95
     min_p: 0.05
-    max_tokens: 16384
-    n_parts: -1
     batch_size: 512
     micro_batch_size: 256
     n_gpu_layers: -1
@@ -524,12 +510,10 @@
     repeat_penalty: 1.1
     temperature: 0.6
     seed: -1
-    num_predict: -1
+    num_predict: 16384
     top_k: 20
     top_p: 0.90
     min_p: 0.05
-    max_tokens: 16384
-    n_parts: -1
     batch_size: 512
     micro_batch_size: 256
     n_gpu_layers: -1

@@ -109,7 +109,13 @@ class LlamaCppArgumentBuilder:
                 "metrics": True,
                 "slots": True,
                 "no_warmup": True,
-                "flash_attn": "on",
+                # Honor params.flash_attention (was hardcoded "on", so a yaml
+                # flash_attention: False silently did nothing). Default on.
+                "flash_attn": (
+                    "on"
+                    if (params.flash_attention is None or params.flash_attention)
+                    else "off"
+                ),
                 "cache_type_k": "q8_0",
                 "cache_type_v": "q8_0",
                 "threads": int(os.cpu_count() or 4),
@@ -167,6 +173,19 @@ class LlamaCppArgumentBuilder:
                 "top_k": params.top_k,
                 "top_p": params.top_p,
                 "min_p": params.min_p,
+                # presence/frequency penalties (--presence-penalty/--frequency-penalty,
+                # fields penalty_present/penalty_freq) — DISTINCT from repeat_penalty
+                # (multiplicative) and DRY (n-gram). None-drop keeps llama's 0.0
+                # default; left off in yaml for coding models (they can hurt code).
+                "presence_penalty": params.presence_penalty,
+                "frequency_penalty": params.frequency_penalty,
+                # top-n-sigma logit-stddev truncation (--top-n-sigma). None/-1 = off.
+                "top_n_sigma": params.top_n_sigma,
+                # n_predict (--n-predict) — server-side CAP on generated tokens per
+                # response. This IS the OpenAI max_tokens concept (one field). None
+                # dropped; -1 = unbounded; a positive int (e.g. 16384) bounds a
+                # runaway turn. A per-request max_tokens still overrides this default.
+                "n_predict": params.num_predict,
                 "dry_multiplier": (
                     params.dry_multiplier if params.dry_multiplier is not None else 0.0
                 ),
@@ -198,6 +217,12 @@ class LlamaCppArgumentBuilder:
         # for hash-based slot assignment in session persistence.
         if params.slot_prompt_similarity is not None:
             config["slot_prompt_similarity"] = str(params.slot_prompt_similarity)
+
+        # Seed (--seed). Guarded on >= 0 so the conventional yaml `seed: -1`
+        # ("random") does NOT pin a literal seed; only an explicit non-negative
+        # seed is emitted. Makes the field truthful instead of silently inert.
+        if params.seed is not None and params.seed >= 0:
+            config["seed"] = params.seed
 
         # Tensor split - only set if configured
         if params.tensor_split:

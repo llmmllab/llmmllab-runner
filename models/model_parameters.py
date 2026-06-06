@@ -45,9 +45,17 @@ class ModelParameters(BaseModel):
     """Sequences where the model should stop generating"""
     num_predict: Annotated[
         Optional[int],
-        Field(default=None, description="Maximum number of tokens to predict"),
+        Field(
+            default=None,
+            description="Server-side default cap on tokens generated per response "
+            "(llama.cpp -n/--n-predict, field n_predict). -1 = unbounded (to context "
+            "limit); a positive int caps output. This IS the OpenAI `max_tokens` "
+            "concept — server-task.cpp maps max_tokens/n_predict/max_completion_tokens "
+            "to the single n_predict field — so there is no separate max_tokens knob. "
+            "A per-request max_tokens/n_predict body field overrides this default.",
+        ),
     ] = None
-    """Maximum number of tokens to predict"""
+    """Server-side generated-token cap (llama.cpp --n-predict). Same field as OpenAI max_tokens."""
     top_k: Annotated[
         Optional[int],
         Field(default=None, description="Limits next token selection to top K options"),
@@ -76,22 +84,49 @@ class ModelParameters(BaseModel):
         ),
     ] = None
     """Whether to enable \"thinking\" mode for the model"""
-    max_tokens: Annotated[
-        Optional[int],
+    # NOTE: `max_tokens` was REMOVED — it is the SAME field as `num_predict`
+    # (server-task.cpp maps max_tokens/n_predict/max_completion_tokens to the one
+    # n_predict field). Use `num_predict`. A per-request `max_tokens` body field
+    # still works and overrides the server default. `n_parts` was REMOVED too —
+    # it's a dead legacy GGML concept with no flag in modern llama.cpp (model
+    # splitting is `split_mode`/`tensor_split`).
+    presence_penalty: Annotated[
+        Optional[float],
         Field(
             default=None,
-            description="Maximum number of tokens to generate in a single response",
+            description="OpenAI-style presence penalty (llama.cpp --presence-penalty, "
+            "field penalty_present). Flat one-time penalty for any token that has "
+            "appeared at all; discourages topic re-entry. 0.0 = disabled. DISTINCT "
+            "from repeat_penalty (multiplicative) and frequency_penalty (count-scaled). "
+            "Shares the repeat_last_n window. NOTE: presence/frequency penalties can "
+            "HURT code generation (code legitimately repeats tokens) — leave off/low "
+            "for coding models unless tuning against repetition.",
         ),
     ] = None
-    """Maximum number of tokens to generate in a single response"""
-    n_parts: Annotated[
-        Optional[int],
+    """Presence penalty (llama.cpp --presence-penalty / penalty_present). 0.0 = off."""
+    frequency_penalty: Annotated[
+        Optional[float],
         Field(
             default=None,
-            description="Number of parts to split the model into. -1 means auto.",
+            description="OpenAI-style frequency penalty (llama.cpp --frequency-penalty, "
+            "field penalty_freq). Penalty scales with how many times a token has "
+            "appeared; the most targeted lever for over-used-token drift. 0.0 = "
+            "disabled. DISTINCT from repeat_penalty and DRY. Shares the repeat_last_n "
+            "window. Same code-generation caveat as presence_penalty.",
         ),
     ] = None
-    """Number of parts to split the model into. -1 means auto."""
+    """Frequency penalty (llama.cpp --frequency-penalty / penalty_freq). 0.0 = off."""
+    top_n_sigma: Annotated[
+        Optional[float],
+        Field(
+            default=None,
+            description="Logit std-dev truncation (llama.cpp --top-n-sigma, field "
+            "top_n_sigma). -1.0 = disabled. A newer, Qwen-friendly truncation that is "
+            "an alternative to the top_k/min_p stack. Off by default; exposed as a "
+            "tunable knob for cascade experimentation.",
+        ),
+    ] = None
+    """Top-n-sigma logit-stddev truncation (llama.cpp --top-n-sigma). -1.0 = off."""
     batch_size: Annotated[
         Optional[int],
         Field(default=None, description="Batch size for processing inputs"),
