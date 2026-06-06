@@ -149,7 +149,12 @@
     top_k: 12
     top_p: 0.95
     min_p: 0.06
-    dry_multiplier: 1.2
+    # DRY DISABLED 2026-06-06 (scrambling test): dry_allowed_length:2 over a
+    # 2048-token window penalizes ANY repeated 3+ token sequence — file paths,
+    # repo names, code identifiers — pushing the model off the correct tokens and
+    # producing progressive character-scrambling of repeated strings. multiplier:0
+    # turns DRY off while keeping the tuned params for an easy re-enable.
+    dry_multiplier: 0
     dry_base: 1.75
     dry_allowed_length: 2
     dry_penalty_last_n: 2048
