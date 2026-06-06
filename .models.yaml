@@ -1,8 +1,10 @@
-- id: Qwen3_6_27B
-  name: "Qwen3.6-27B"
-  model: "Qwen3.6-27B"
+# OLD Q6 quant — renamed to _Q6 because the UD-Q6_K_XL build cascades
+# (word-association runaway); the canonical Qwen3_6_27B is now the Q5 quant
+# (see the block below + docs/qwen36-word-cascade.md). Kept for comparison.
+- id: Qwen3_6_27B_Q6
+  name: "Qwen3.6-27B-Q6"
+  model: "Qwen3.6-27B-Q6"
   task: TextToText
-  default: true
   modified_at: "2026-04-22T15:59:03.844554+00:00"
   digest: 19a2f4733a863088bc06665bf307dca95f7d4370b4d8690340cdff9992fe48c6
   size: 35325163744
@@ -113,15 +115,14 @@
   lora_weights: []
   provider: llama_cpp
 
-# Q5 variant — diagnostic for whether the word-association cascade is a
-# QUANT artifact of the UD-Q6_K_XL build. Same model, same fixed sampler,
-# text-only (no mmproj); only the GGUF quant differs (UD-Q5_K_XL). Loads on
-# the same two 3090s (evicts whatever's warm). Drop after the test if Q5
-# doesn't help.
-- id: Qwen3_6_27B_Q5
-  name: "Qwen3.6-27B-Q5"
-  model: "Qwen3.6-27B-Q5"
+# CANONICAL Qwen3.6-27B — now the UD-Q5_K_XL quant. The Q6 quant cascaded
+# (word-association runaway); Q5 does not. Text-only (no mmproj), fixed sampler
+# + num_predict cap. The old Q6 is kept above as Qwen3_6_27B_Q6.
+- id: Qwen3_6_27B
+  name: "Qwen3.6-27B"
+  model: "Qwen3.6-27B"
   task: TextToText
+  default: true
   modified_at: "2026-06-06T00:00:00+00:00"
   digest: "q5kxl0000000000000000000000000000000000000000000000000000000000"
   size: 20100000000
