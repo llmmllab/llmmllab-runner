@@ -142,13 +142,13 @@
   parameters:
     num_ctx: 200000
     repeat_last_n: 128
-    repeat_penalty: 1.15
+    repeat_penalty: 1.0
     temperature: 0.60
     seed: -1
     num_predict: 16384
-    top_k: 12
+    top_k: 20
     top_p: 0.95
-    min_p: 0.06
+    min_p: 0.00
     # DRY DISABLED 2026-06-06 (scrambling test): dry_allowed_length:2 over a
     # 2048-token window penalizes ANY repeated 3+ token sequence — file paths,
     # repo names, code identifiers — pushing the model off the correct tokens and
@@ -162,7 +162,7 @@
     micro_batch_size: 2048
     cache_ram: 4096
     n_gpu_layers: -1
-    think: False
+    think: True
     reasoning_budget: 4096
     kv_on_cpu: False
     tensor_split: "0,1,1"
