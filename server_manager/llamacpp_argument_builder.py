@@ -218,10 +218,11 @@ class LlamaCppArgumentBuilder:
         if params.slot_prompt_similarity is not None:
             config["slot_prompt_similarity"] = str(params.slot_prompt_similarity)
 
-        # Seed (--seed). Guarded on >= 0 so the conventional yaml `seed: -1`
-        # ("random") does NOT pin a literal seed; only an explicit non-negative
-        # seed is emitted. Makes the field truthful instead of silently inert.
-        if params.seed is not None and params.seed >= 0:
+        # Seed (--seed). isinstance(int) guard so the conventional yaml
+        # `seed: -1` ("random") does NOT pin a literal seed; only an explicit
+        # non-negative int is emitted. (isinstance also keeps this robust to
+        # mocked params in tests, where params.seed is a MagicMock.)
+        if isinstance(params.seed, int) and params.seed >= 0:
             config["seed"] = params.seed
 
         # Tensor split - only set if configured
