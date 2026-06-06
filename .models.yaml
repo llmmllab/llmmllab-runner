@@ -115,6 +115,65 @@
   lora_weights: []
   provider: llama_cpp
 
+# Q5 variant — diagnostic for whether the word-association cascade is a
+# QUANT artifact of the UD-Q6_K_XL build. Same model, same fixed sampler,
+# text-only (no mmproj); only the GGUF quant differs (UD-Q5_K_XL). Loads on
+# the same two 3090s (evicts whatever's warm). Drop after the test if Q5
+# doesn't help.
+- id: Qwen3_6_27B_Q5
+  name: "Qwen3.6-27B-Q5"
+  model: "Qwen3.6-27B-Q5"
+  task: TextToText
+  modified_at: "2026-06-06T00:00:00+00:00"
+  digest: "q5kxl0000000000000000000000000000000000000000000000000000000000"
+  size: 20100000000
+  details:
+    format: gguf
+    gguf_file: "/models/qwen3.6/27b/ud-q5_k_xl.gguf"
+    family: qwen
+    families:
+      - qwen
+    parameter_size: 26.9B
+    quantization_level: Q5_K_XL
+    precision: int4
+    dtype: int4
+    specialization: Text
+    size: 20100000000
+    original_ctx: 2048
+  parameters:
+    num_ctx: 200000
+    repeat_last_n: 128
+    repeat_penalty: 1.15
+    temperature: 0.60
+    seed: -1
+    num_predict: -1
+    top_k: 12
+    top_p: 0.95
+    min_p: 0.06
+    dry_multiplier: 1.2
+    dry_base: 1.75
+    dry_allowed_length: 2
+    dry_penalty_last_n: 2048
+    max_tokens: 65536
+    n_parts: -1
+    batch_size: 4096
+    micro_batch_size: 2048
+    cache_ram: 4096
+    n_gpu_layers: -1
+    think: True
+    reasoning_budget: 4096
+    kv_on_cpu: False
+    tensor_split: "0,1,1"
+    main_gpu: 2
+    kv_unified: True
+    parallel: 4
+    ctx_checkpoints: 8
+    mirostat: 0
+    split_mode: "layer"
+  pipeline: llama
+  lora_weights: []
+  provider: llama_cpp
+
 - id: Qwen3_6_27B_MTP
   name: "Qwen3.6-27B-MTP"
   model: "Qwen3.6-27B-MTP"
