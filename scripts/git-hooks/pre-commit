@@ -1,0 +1,20 @@
+#!/bin/sh
+# Guards against the recurring footgun: `git commit -a` from a drifted local
+# checkout silently re-captures an OLD vendors/llama.cpp gitlink, which then
+# fails the deploy guard (no gemma4uv) and blocks the runner deploy.
+#
+# This refuses any commit whose STAGED vendors/llama.cpp gitlink != the pinned
+# LLAMA_CPP_SHA in the Makefile. Fix when it fires: `make vendor-sync` (forces
+# the submodule to the pin and stages it), then commit again.
+#
+# Install once with: make install-hooks
+# Bypass deliberately with: git commit --no-verify
+if git ls-files -s vendors/llama.cpp >/dev/null 2>&1; then
+    if ! make --no-print-directory vendor-check; then
+        echo ""
+        echo "pre-commit: BLOCKED — vendors/llama.cpp gitlink doesn't match the pin."
+        echo "            Run 'make vendor-sync' to fix it, then commit again."
+        echo "            (Override with 'git commit --no-verify' if you truly mean it.)"
+        exit 1
+    fi
+fi

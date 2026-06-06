@@ -3,6 +3,14 @@ name: Deploy Runner
 on:
   push:
     branches: [main]
+    # Tooling/docs/CI-only changes don't change the runtime image — don't roll
+    # the runner (and interrupt live sessions) for them. A push that ALSO touches
+    # anything outside this list still deploys.
+    paths-ignore:
+      - '**.md'
+      - 'Makefile'
+      - 'scripts/git-hooks/**'
+      - '.github/**'
 
 jobs:
   deploy:
@@ -35,7 +43,8 @@ jobs:
           else
             echo "::error::vendors/llama.cpp is checked out at $(git -C vendors/llama.cpp rev-parse HEAD) which LACKS gemma4uv support."
             echo "This usually means a 'git commit -a' in a stale checkout reverted the submodule gitlink."
-            echo "Fix: cd vendors/llama.cpp && git checkout <sha-with-gemma4uv> && cd ../.. && git add vendors/llama.cpp && git commit"
+            echo "Fix locally:  make vendor-sync && git commit   (forces llama.cpp to the pinned LLAMA_CPP_SHA and stages it)"
+            echo "Prevent it:   make install-hooks               (a pre-commit guard so a drifted gitlink can't be committed)"
             exit 1
           fi
 

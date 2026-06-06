@@ -9,7 +9,15 @@ IMAGE    ?= llmmllab-runner
 TAG      ?= latest
 REGISTRY ?= 192.168.0.71:31500
 
-.PHONY: help install start start-reload validate clean test docker-build docker-run vendor-sync vendor-status vendor-install-py
+# Pinned llama.cpp commit — the SOURCE OF TRUTH for which llama.cpp the runner
+# builds against. MUST be a commit that has gemma-4 vision (the gemma4uv mtmd
+# model; the deploy guard enforces this). `git commit -a` from a drifted local
+# checkout keeps silently reverting the submodule gitlink to an old SHA and
+# blocking the deploy — so do NOT let the gitlink be the source of truth.
+# To roll llama.cpp forward: bump THIS line, then `make vendor-sync && git commit`.
+LLAMA_CPP_SHA ?= 308f61c31f083251ce8150f10b9ef97679b500b5
+
+.PHONY: help install start start-reload validate clean test docker-build docker-run vendor-sync vendor-status vendor-check vendor-install-py install-hooks
 
 ## Help
 help: ## Show this help
@@ -43,10 +51,34 @@ test-unit: ## Run unit tests only
 ##   vendors/llama.cpp             text inference (ggml-org/llama.cpp)
 ##   vendors/stable-diffusion.cpp  image inference (leejet/stable-diffusion.cpp)
 ##   vendors/Hunyuan3D-2           image-to-3D pipeline (Tencent/Hunyuan3D-2)
-vendor-sync: ## Init and update vendored submodules to their pinned commits
-	git submodule update --init --recursive
+vendor-sync: ## Sync vendor submodules; FORCE llama.cpp to $(LLAMA_CPP_SHA) and stage the gitlink
+	git submodule sync --recursive
+	-git submodule update --init --recursive
+	@echo "→ pinning vendors/llama.cpp to $(LLAMA_CPP_SHA)"
+	-@git -C vendors/llama.cpp fetch -q origin $(LLAMA_CPP_SHA) 2>/dev/null || git -C vendors/llama.cpp fetch -q --all
+	git -C vendors/llama.cpp checkout -q --detach $(LLAMA_CPP_SHA)
+	git add vendors/llama.cpp
+	@grep -rq gemma4uv vendors/llama.cpp/tools/mtmd 2>/dev/null \
+	  && echo "✓ llama.cpp pinned ($(LLAMA_CPP_SHA), gemma4uv ✓) + gitlink staged — now: git commit" \
+	  || { echo "✗ $(LLAMA_CPP_SHA) lacks gemma4uv (same check the deploy guard runs) — fix LLAMA_CPP_SHA"; exit 1; }
+
+vendor-check: ## Verify the STAGED llama.cpp gitlink matches the pin (run by the pre-commit hook + CI)
+	@got=`git ls-files -s vendors/llama.cpp | awk '{print $$2}'`; \
+	if [ "$$got" = "$(LLAMA_CPP_SHA)" ]; then \
+	  echo "✓ llama.cpp gitlink matches pin ($(LLAMA_CPP_SHA))"; \
+	else \
+	  echo "✗ llama.cpp gitlink ($$got) != pin ($(LLAMA_CPP_SHA))"; \
+	  echo "  A stale checkout reverted the gitlink. Fix: make vendor-sync && git commit"; \
+	  exit 1; \
+	fi
+
+install-hooks: ## Install the repo's git hooks (pre-commit guards the llama.cpp pin). Run once after cloning.
+	git config core.hooksPath scripts/git-hooks
+	-chmod +x scripts/git-hooks/* 2>/dev/null
+	@echo "✓ hooks installed (core.hooksPath=scripts/git-hooks). commit -a can no longer revert the llama.cpp pin."
 
 vendor-status: ## Show pinned commit / current state of each vendor submodule
+	@echo "pin (LLAMA_CPP_SHA): $(LLAMA_CPP_SHA)"
 	@git submodule status
 
 vendor-install-py: vendor-sync ## Editable-install the Python-side vendors locally for type hints + IDE jump-to-def (Hunyuan3D's hy3dgen package). Requires the runner's CUDA-bound deps (torch, kornia, timm) already in your venv if you want to actually run anything; without them you still get pyright/symbol resolution.
