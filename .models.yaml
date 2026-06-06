@@ -157,7 +157,7 @@
     micro_batch_size: 2048
     cache_ram: 4096
     n_gpu_layers: -1
-    think: True
+    think: False
     reasoning_budget: 4096
     kv_on_cpu: False
     tensor_split: "0,1,1"
