@@ -744,15 +744,38 @@ async def _save_slot(
             outcome="success" if ok else "failure",
         ).inc()
         slot_save_duration_seconds.observe(time.monotonic() - start)
-        logger.info(
-            "Slot save",
-            session_id=session_id,
-            slot_id=slot_id,
-            action="save",
-            slot_file=os.path.basename(slot_file),
-            status=resp.status_code,
-            n_saved=n_saved,
-        )
+
+        # Capture the upstream response body for diagnostics on failure.
+        # When llama.cpp rejects the save (e.g. disk full, invalid filename),
+        # the body contains the actual error message; without it the only
+        # signal is an opaque HTTP status code.
+        upstream_detail = None
+        if not ok:
+            if isinstance(body, dict):
+                upstream_detail = body.get("error") or body.get("detail") or json.dumps(body)
+            else:
+                upstream_detail = resp.text
+
+        if ok:
+            logger.info(
+                "Slot save",
+                session_id=session_id,
+                slot_id=slot_id,
+                action="save",
+                slot_file=os.path.basename(slot_file),
+                status=resp.status_code,
+                n_saved=n_saved,
+            )
+        else:
+            logger.warning(
+                "Slot save failed",
+                session_id=session_id,
+                slot_id=slot_id,
+                action="save",
+                slot_file=os.path.basename(slot_file),
+                status=resp.status_code,
+                error=upstream_detail,
+            )
         return ok
     except Exception as e:
         slot_save_total.labels(slot_id=str(slot_id), outcome="failure").inc()
@@ -975,6 +998,17 @@ def _schedule_post_turn_save(
                 )
                 if saved:
                     _record_saved_file(session_id, server_id)
+                else:
+                    # _save_slot already logged the upstream error details;
+                    # this line ensures the background task's own lifecycle
+                    # is visible in logs (useful when saves fail silently
+                    # due to the task being cancelled or the upstream gone).
+                    logger.debug(
+                        "Background post-turn save returned False",
+                        session_id=session_id,
+                        slot_id=slot_id,
+                        server_id=server_id,
+                    )
         except Exception as exc:  # pragma: no cover — defensive
             logger.warning(
                 "Background post-turn save raised",
