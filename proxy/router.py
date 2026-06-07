@@ -877,7 +877,12 @@ async def _stream_upstream(
             stream=True,
         )
     except httpx.HTTPError as exc:
-        logger.error("Upstream server %s error before response: %s", server_id, exc)
+        logger.error(
+            "Upstream server %s error before response: %s (%s)",
+            server_id,
+            exc,
+            type(exc).__name__,
+        )
         from app import server_cache
 
         server_cache.decrement_use(server_id)
@@ -1372,7 +1377,12 @@ async def proxy_request(request: Request, server_id: str, path: str):
             raise
 
     except httpx.RemoteProtocolError as exc:
-        logger.error("Upstream server %s disconnected: %s", server_id, exc)
+        logger.error(
+            "Upstream server %s disconnected: %s (%s)",
+            server_id,
+            exc,
+            type(exc).__name__,
+        )
         raise HTTPException(
             status_code=503,
             detail=f"Upstream server {server_id} disconnected unexpectedly: {exc}",
