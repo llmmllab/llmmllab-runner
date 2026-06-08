@@ -414,6 +414,63 @@
   lora_weights: []
   provider: llama_cpp
 
+# Gemma 4 12B — pinned to CUDA0 (RTX 3060, 12 GB) on the main runner.
+# Moved from the small runner (lsnode-4) 2026-06-07 to eliminate cron-job
+# stalls: the small runner's single GPU was overwhelmed by concurrent
+# large-context sessions (6+ minute prefill, OOM-killed by OpenClaw's
+# stuck-session recovery at 822s).  The main runner's 3060 handles the
+# 12B comfortably alongside Qwen3.6-27B on the 3090s, with independent
+# llama-server processes so they don't compete for slots.
+- id: Gemma4_12B
+  name: "Gemma 4 12B"
+  model: "Gemma4_12B"
+  task: TextToText
+  modified_at: "2026-06-07T00:00:00+00:00"
+  digest: "0000000000000000000000000000000000000000000000000000000000000004"
+  # Real on-disk size of gemma-4-12b-it-UD-Q4_K_XL.gguf (7.37 GB).
+  size: 7366421920
+  details:
+    format: gguf
+    gguf_file: "/models/gemma4/12b/gemma-4-12b-it-UD-Q4_K_XL.gguf"
+    family: gemma4
+    families:
+      - gemma4
+    parameter_size: 11.95B
+    quantization_level: Q4_K_XL
+    precision: int4
+    dtype: int4
+    specialization: Text
+    size: 7366421920
+    original_ctx: 2048
+  parameters:
+    # CUDA0 (RTX 3060, 12 GB) — solo resident, no tensor split.
+    # VRAM budget: 7.37 GB weights + 65k q8 KV (~5.2 GB) ≈ 12.6 GB.
+    # Tight fit; the runner's --fit auto-reduces ctx if needed.
+    num_ctx: 65536
+    repeat_last_n: 64
+    repeat_penalty: 1.0
+    temperature: 1.0
+    seed: -1
+    num_predict: -1
+    top_k: 64
+    top_p: 0.95
+    min_p: 0.0
+    max_tokens: 16384
+    n_parts: -1
+    batch_size: 512
+    micro_batch_size: 256
+    n_gpu_layers: -1
+    think: False
+    kv_on_cpu: False
+    parallel: 2
+    kv_unified: True
+    main_gpu: 0
+    tensor_split: "1,0,0"
+    ctx_checkpoints: 8
+  pipeline: llama
+  lora_weights: []
+  provider: llama_cpp
+
 - id: Qwen3_5_9B
   name: "Qwen3.5-9B"
   model: "Qwen3.5-9B"
