@@ -314,23 +314,90 @@ The api layer's `GET /v1/images/3d/{filename}` proxies through to this endpoint 
 
 ## Configuration
 
-All configuration is environment-variable-driven via `.env`:
+All configuration is environment-variable-driven via `.env`. See `config.py` for defaults.
+
+### Core
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `LOG_LEVEL` | `WARNING` | Log level (DEBUG, INFO, WARNING, ERROR) |
-| `LLAMA_SERVER_EXECUTABLE` | `/llama.cpp/build/bin/llama-server` | Path to llama.cpp binary |
-| `MODELS_FILE_PATH` | (empty) | Path to `.models.yaml` — checked before `/app/.models.yaml` |
-| `CACHE_TIMEOUT_MIN` | `5` | Soft eviction timeout in minutes. The api mirrors this value to decide when an idle loaded server is safe to commandeer for a new session. |
-| `EVICTION_TIMEOUT_MIN` | `30` | Hard eviction timeout in minutes |
+| `RUNNER_NAME` | `llmmllab-runner` | Service name (used for tracing identification) |
+| `LLAMA_SERVER_EXECUTABLE` | `/llama.cpp/build/bin/llama-server` | Path to the `llama-server` binary |
+| `SD_SERVER_EXECUTABLE` | `/stable-diffusion.cpp/build/bin/sd-server` | Path to the `sd-server` binary |
+| `SD_OUTPUT_DIR` | `/data/sd-out` | Image-output directory for SD pipelines; sub-pipelines default relative to this |
+| `MODELS_FILE_PATH` | *(empty)* | Path to `.models.yaml` — checked before `/app/.models.yaml` |
+
+### Server Lifecycle
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `CACHE_TIMEOUT_MIN` | `10` | Soft eviction timeout (minutes) — server becomes *eligible* for eviction when VRAM pressure occurs. The api mirrors this value to decide when an idle loaded server is safe to commandeer for a new session. |
+| `EVICTION_TIMEOUT_MIN` | `30` | Hard eviction timeout in minutes. Cross-repo coupling: the api uses the same value to classify "paused session vs abandoned server".
+| `SERVER_START_OOM_RETRIES` | `2` | Max retries when a server start fails due to OOM (set `0` to disable) |
+
+### Network
+
+| Variable | Default | Description |
+|----------|---------|-------------|
 | `RUNNER_PORT` | `8000` | Port the runner listens on |
 | `RUNNER_HOST` | `0.0.0.0` | Bind address |
 | `SERVER_PORT_RANGE_START` | `8001` | Start of dynamic port range for llama.cpp instances |
 | `SERVER_PORT_RANGE_END` | `8900` | End of dynamic port range |
-| `PROXY_TIMEOUT` | `600` | Upstream proxy timeout in seconds |
-| `GPU_POWER_CAP_PCT` | `85` | GPU power cap as % of default TDP (0 to disable) |
-| `SLOT_SAVE_DIR` | (empty) | Directory for persistent KV cache slots. When set, passes `--slot-save-path` to llama-server. Enables automatic save-on-evict / restore-before-use on chat completions with `X-Session-ID` header. See [Slot Pinning + KV Cache Persistence](#slot-pinning--kv-cache-persistence). |
-| `SLOT_NO_MMAP` | `true` | Pass `--no-mmap` when `SLOT_SAVE_DIR` is set. Prevents OS from evicting mmap pages between save/restore. |
+| `PROXY_TIMEOUT` | `600` | Upstream proxy timeout (seconds) — must exceed longest expected inference time |
+
+### GPU & Hardware
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `GPU_POWER_CAP_PCT` | `85` | GPU power cap as % of default TDP (`0` to disable) |
+| `DCGM_METRICS_ENABLED` | `true` | Enable DCGM exporter metrics scraping (`true`/`false`) |
+| `DCGM_EXPORTER_URL` | `http://nvidia-dcgm-exporter.gpu-operator.svc.cluster.local:9400/metrics` | DCGM exporter metrics endpoint (Kubernetes ClusterIP across GPU nodes; filter by `NODE_NAME`) |
+| `DCGM_METRICS_INTERVAL_SEC` | `15` | DCGM metrics scrape interval (seconds) |
+| `LLAMA_METRICS_INTERVAL_SEC` | `15` | Llama.cpp server metrics scraping interval (seconds) |
+| `NODE_NAME` | *(empty)* | Kubernetes node name (set via downward API); used to filter DCGM metrics to the local node |
+
+### Logging & Observability
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `LOG_LEVEL` | `WARNING` | Log level (`DEBUG`, `INFO`, `WARNING`, `ERROR`) |
+| `LOG_FORMAT` | `console` | Log format (`console` for human-readable, `json` for structured) |
+| `FORCE_COLOR` | `0` | Force colored output even without TTY (`1` to enable) |
+| `TEMPO_ENDPOINT` | `http://tempo.llmmllab.svc.cluster.local:4317` | Jaeger/Tempo OTLP endpoint for distributed tracing |
+
+### Pipeline Configuration
+
+These variables control the image-generation sub-pipelines (img23d, mesh2parts, rembg):
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `HUNYUAN3D_MODEL_PATH` | `tencent/Hunyuan3D-2.1` | HuggingFace model path for img23d pipeline |
+| `HUNYUAN3D_SUBFOLDER` | `hunyuan3d-dit-v2-1` | Model subfolder within the HuggingFace repo |
+| `HUNYUAN3D_USE_SAFETENSORS` | `false` | Use safetensors format for model loading (`true`/`false`) |
+| `TRELLIS_OUTPUT_DIR` | `$SD_OUTPUT_DIR/3d` | Output directory for img23d (Trellis) pipeline |
+| `HUNYUAN3D_PART_OUTPUT_DIR` | `$SD_OUTPUT_DIR/3d_parts` | Output directory for mesh2parts pipeline |
+| `HUNYUAN3D_PART_OCTREE_RESOLUTION` | `512` | Octree resolution for mesh2parts |
+| `HUNYUAN3D_PART_MAX_PARTS` | `0` | Maximum parts for mesh2parts (`0` = unlimited) |
+| `HUNYUAN3D_PART_DTYPE` | `fp16` | Data type for mesh2parts computation (`fp16`, `bf16`, `fp32`) |
+| `RMBG_OUTPUT_DIR` | `$SD_OUTPUT_DIR/rembg` | Output directory for rembg pipeline |
+| `RMBG_INPUT_SIZE` | `1024` | Input size for rembg pipeline |
+| `IN_PROCESS_AUTO_UNLOAD` | *(empty)* | If truthy, auto-unload pipeline models after use to reclaim VRAM |
+
+### Runtime (GPU / Allocator)
+
+These are set in the Kubernetes deployment and affect the underlying runtime:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `CUDA_VISIBLE_DEVICES` | *(unset)* | GPU device IDs visible to the process |
+| `CUDA_DEVICE_ORDER` | `PCI_BUS_ID` | CUDA device ordering |
+| `CUDA_LAUNCH_BLOCKING` | `0` | Synchronous CUDA error checking (`1` for debugging) |
+| `NVIDIA_VISIBLE_DEVICES` | `all` | NVIDIA container runtime device visibility |
+| `NVIDIA_DRIVER_CAPABILITIES` | `compute,utility,video` | NVIDIA driver capabilities |
+| `PYTHONMALLOC` | `malloc` | Python memory allocator |
+| `MALLOC_ARENA_MAX` | `2` | glibc malloc arena limit (reduces memory fragmentation) |
+| `GGML_LOG_LEVEL` | `2` | GGML (llama.cpp backend) log verbosity |
+| `SLOT_SAVE_DIR` | (empty) | Directory for persistent KV cache slots. When set, passes `--slot-save-path` to llama-server, enabling session state persistence via the slot save/restore API. See [Slot Persistence](#slot-persistence) below. |
+| `SLOT_NO_MMAP` | `false` | Pass `--no-mmap` when `SLOT_SAVE_DIR` is set (opt-in). Prevents OS from evicting mmap pages between save/restore. Set to `true` only if you hit specific page-eviction issues with saved slots.
 | `SLOT_SWA_FULL` | `true` | Pass `--swa-full` when `SLOT_SAVE_DIR` is set. Required for SWA models (e.g. Qwen 3.5) to correctly persist their KV cache. |
 | `SLOT_INACTIVE_MAX_AGE_MIN` | `12` | Delete slot files for sessions inactive for this many minutes. Uses the proxy's session-activity tracker. Set to `0` to disable. |
 | `SLOT_CLEANUP_MAX_AGE_MIN` | `12` | Absolute age floor: delete any slot file older than this many minutes, regardless of session activity. Catches orphaned files. Set to `0` to disable. |

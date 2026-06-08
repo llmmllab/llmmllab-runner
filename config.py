@@ -153,11 +153,6 @@ SLOT_NO_MMAP = os.environ.get("SLOT_NO_MMAP", "false").lower() in (
     "1",
     "yes",
 )
-SLOT_NO_MMAP = os.environ.get("SLOT_NO_MMAP", "false").lower() in (
-    "true",
-    "1",
-    "yes",
-)
 
 # When SLOT_SAVE_DIR is set, also pass --swa-full to llama-server.
 # This is required for SWA (Sliding Window Attention) models such as
