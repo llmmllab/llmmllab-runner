@@ -26,25 +26,31 @@ jobs:
           # fail with "no source files were specified".
           submodules: recursive
 
-      # actions/checkout's submodule step does NOT force an already-checked-out
-      # submodule to the newly-committed SHA on a self-hosted runner with a
-      # persistent workspace — so a bumped vendors/llama.cpp can stay at the old
-      # commit, the Dockerfile's `COPY vendors/llama.cpp` cache-hits, and the old
-      # binary gets baked in (this silently shipped a llama.cpp without gemma4
-      # vision support, 2026-06). Force the submodules to the committed gitlink.
-      - name: Force submodules to the committed SHA
+      # Force vendors/llama.cpp to the PINNED commit (LLAMA_CPP_SHA in the
+      # Makefile) — NOT the committed submodule gitlink. The gitlink keeps getting
+      # reverted to an old SHA by `git commit -a` from a stale local checkout,
+      # which blocked every deploy on the gemma4uv guard. Pinning here makes that
+      # drift IRRELEVANT: the build always uses the intended llama.cpp regardless
+      # of what the gitlink says. The Makefile pin is the single source of truth —
+      # to roll llama.cpp forward, bump LLAMA_CPP_SHA there. (The Build step derives
+      # LLAMA_SHA from `rev-parse HEAD`, which is now the pin, so the cache busts
+      # correctly.)
+      - name: Pin vendors/llama.cpp to LLAMA_CPP_SHA
         run: |
           set -euo pipefail
           git submodule sync --recursive
-          git submodule update --init --force --recursive
-          echo "vendors/llama.cpp -> $(git -C vendors/llama.cpp rev-parse HEAD)"
-          if grep -rl "gemma4uv" vendors/llama.cpp/tools/mtmd >/dev/null 2>&1; then
-            echo "llama.cpp HAS gemma4uv support"
-          else
-            echo "::error::vendors/llama.cpp is checked out at $(git -C vendors/llama.cpp rev-parse HEAD) which LACKS gemma4uv support."
-            echo "This usually means a 'git commit -a' in a stale checkout reverted the submodule gitlink."
-            echo "Fix locally:  make vendor-sync && git commit   (forces llama.cpp to the pinned LLAMA_CPP_SHA and stages it)"
-            echo "Prevent it:   make install-hooks               (a pre-commit guard so a drifted gitlink can't be committed)"
+          # init/clone the submodule dir (to whatever the gitlink says — we override next)
+          git submodule update --init --force --recursive || true
+          PIN=$(grep -E '^LLAMA_CPP_SHA' Makefile | head -1 | sed -E 's/^[^=]*=[[:space:]]*//' | awk '{print $1}')
+          if [ -z "$PIN" ]; then echo "::error::LLAMA_CPP_SHA not found in Makefile"; exit 1; fi
+          echo "Committed gitlink: $(git -C vendors/llama.cpp rev-parse HEAD)  |  Makefile pin: ${PIN}"
+          git -C vendors/llama.cpp fetch -q origin "$PIN" 2>/dev/null || git -C vendors/llama.cpp fetch -q --all
+          git -C vendors/llama.cpp checkout -q --detach "$PIN"
+          echo "vendors/llama.cpp pinned to $(git -C vendors/llama.cpp rev-parse HEAD)"
+          # Sanity-check the PIN (not the gitlink): it must have gemma-4 vision.
+          # This can now only fail if LLAMA_CPP_SHA itself is wrong.
+          if ! grep -rl "gemma4uv" vendors/llama.cpp/tools/mtmd >/dev/null 2>&1; then
+            echo "::error::LLAMA_CPP_SHA=${PIN} LACKS gemma4uv support — fix the pin in the Makefile."
             exit 1
           fi
 
