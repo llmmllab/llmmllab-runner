@@ -75,8 +75,11 @@ SERVER_PORT_RANGE_END = int(os.environ.get("SERVER_PORT_RANGE_END", "8900"))
 
 # Proxy timeout (seconds) for upstream llama.cpp requests.
 # Must exceed the longest expected inference time.  Streaming requests
-# hold the connection open for the entire generation.
-PROXY_TIMEOUT = float(os.environ.get("PROXY_TIMEOUT", "600"))
+# hold the connection open for the entire generation. Kept >= the api's
+# RUNNER_CHAT_TIMEOUT_SEC (1800) so the runner never cuts a stream the api
+# still considers live — a long cold-start + prefill on a big model can run
+# several minutes before the first token.
+PROXY_TIMEOUT = float(os.environ.get("PROXY_TIMEOUT", "1800"))
 
 # GPU power cap: percentage of default TDP (0 to disable, 100 = no cap)
 GPU_POWER_CAP_PCT = float(os.environ.get("GPU_POWER_CAP_PCT", "85"))
