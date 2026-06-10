@@ -140,7 +140,7 @@
     size: 20100000000
     original_ctx: 2048
   parameters:
-    num_ctx: 200000
+    num_ctx: 220000
     repeat_last_n: 128
     repeat_penalty: 1.0
     temperature: 0.60
