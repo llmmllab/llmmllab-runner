@@ -102,10 +102,12 @@
     # slowdown. (Was parallel:2, non-unified.)
     kv_unified: True
     parallel: 4
-    # Eight in-memory KV snapshots per slot is the llama.cpp default and
-    # matches the per-turn restore frequency we want.  At 32 the runner
-    # was copying ~150 MiB per turn even on 97-99 % cache hits.
-    ctx_checkpoints: 8
+    # 32 in-memory KV snapshots per slot — llama.cpp's actual default
+    # (common.h:600). These survive slot eviction, so a returning session
+    # restores from the nearest checkpoint instead of full-reprocessing the
+    # whole prompt. Cutting it to 8 left too few restore points for big
+    # multi-session contexts and force-reprocessed ~190k tokens every turn.
+    ctx_checkpoints: 32
     # Mirostat off — adds per-token latency vs the top_p/top_k/min_p
     # sampler stack already configured above.  Drops eval rate ~10 %
     # on Qwen3 in our testing.
@@ -169,7 +171,7 @@
     main_gpu: 2
     kv_unified: True
     parallel: 4
-    ctx_checkpoints: 8
+    ctx_checkpoints: 32
     mirostat: 0
     split_mode: "layer"
   pipeline: llama
@@ -237,7 +239,7 @@
     spec_type_mtp: true
     spec_draft_n_max: 3
     kv_unified: True
-    ctx_checkpoints: 8
+    ctx_checkpoints: 32
     mirostat: 0
   pipeline: llama
   lora_weights: []
@@ -295,7 +297,7 @@
     main_gpu: 1
     # n_cpu_moe: 10
     parallel: 2
-    ctx_checkpoints: 8
+    ctx_checkpoints: 32
     mirostat: 0
   pipeline: llama
   lora_weights: []
@@ -354,7 +356,7 @@
     # n_cpu_moe: 10
     # MTP requires parallel=1 (same constraint as Qwen3_6_27B_MTP).
     parallel: 1
-    ctx_checkpoints: 8
+    ctx_checkpoints: 32
     mirostat: 0
   pipeline: llama
   lora_weights: []
@@ -466,7 +468,7 @@
     kv_unified: True
     main_gpu: 0
     tensor_split: "1,0,0"
-    ctx_checkpoints: 8
+    ctx_checkpoints: 32
   pipeline: llama
   lora_weights: []
   provider: llama_cpp
