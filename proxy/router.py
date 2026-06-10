@@ -26,7 +26,7 @@ import httpx
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import Response, StreamingResponse
 
-from config import PROXY_TIMEOUT, SLOT_SAVE_DIR
+from config import FORCE_SLOT_PIN, PROXY_TIMEOUT, SLOT_SAVE_DIR
 from middleware.prometheus_metrics import (
     prompt_body_bytes,
     prompt_fingerprint_total,
@@ -830,15 +830,26 @@ def _inject_slot_body(
     body: bytes,
     slot_id: int,
     *,
+    pin: bool = True,
     cache_prompt: bool = True,
     n_cache_reuse: int = 256,
 ) -> Tuple[bytes, bool]:
-    """Inject id_slot / cache_prompt / n_cache_reuse into the JSON body.
+    """Inject cache_prompt / n_cache_reuse (and, when ``pin``, id_slot) into the
+    JSON body.
 
     Returns ``(new_body, ok)``.  ``ok`` is False if the body wasn't JSON;
     the original body is returned unchanged in that case.
 
-    Caller-provided values for any of the three keys are preserved.
+    ``pin`` (default per FORCE_SLOT_PIN): when False we DELIBERATELY do not set
+    ``id_slot``. Forcing id_slot makes llama.cpp use get_slot_by_id() and skip
+    get_available_slot(), which is the only path that uses the host-RAM prompt
+    cache (``--cache-ram``) to save an evicted slot's prefix and reload it on
+    return — so a forced slot that gets evicted/purged re-prefills the whole
+    prompt. Leaving id_slot off lets llama.cpp pick the slot by longest-common-
+    prefix and back evictions with the L2 cache. cache_prompt / n_cache_reuse are
+    injected either way (prefix reuse is wanted in both modes).
+
+    Caller-provided values for any key are preserved.
     """
     if not body:
         return body, False
@@ -848,7 +859,7 @@ def _inject_slot_body(
         return body, False
     if not isinstance(obj, dict):
         return body, False
-    if "id_slot" not in obj:
+    if pin and "id_slot" not in obj:
         obj["id_slot"] = int(slot_id)
     if "cache_prompt" not in obj:
         obj["cache_prompt"] = cache_prompt
@@ -1288,7 +1299,7 @@ async def proxy_request(request: Request, server_id: str, path: str):
         # Step 2: eager body injection for chat completions with a pinned slot
         upstream_body = body
         if slot_id is not None and is_chat_completion and body:
-            new_body, ok = _inject_slot_body(body, slot_id)
+            new_body, ok = _inject_slot_body(body, slot_id, pin=FORCE_SLOT_PIN)
             if ok:
                 upstream_body = new_body
             else:

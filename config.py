@@ -128,6 +128,21 @@ DCGM_METRICS_INTERVAL_SEC = int(
 # Example: SLOT_SAVE_DIR=/data/slots  →  --slot-save-path /data/slots
 SLOT_SAVE_DIR = os.environ.get("SLOT_SAVE_DIR", "")
 
+# When the proxy force-injects ``id_slot`` into every chat request, llama.cpp
+# routes to get_slot_by_id() and SKIPS get_available_slot() — which is the only
+# path that uses the host-RAM prompt cache (``--cache-ram``) to save an evicted
+# slot's prefix and reload it when that session returns. The result: any slot
+# eviction / idle-purge under concurrency forces a FULL prompt re-prefill (seen
+# live as n_prompt_tokens_cache=0 on a returning 94k-token session). With pinning
+# OFF (the default), llama.cpp picks the slot by longest-common-prefix
+# (``slot_prompt_similarity``) and the L2 cache makes eviction cheap (reload, not
+# re-prefill). Set FORCE_SLOT_PIN=true to restore the old explicit-pin behaviour.
+FORCE_SLOT_PIN = os.environ.get("FORCE_SLOT_PIN", "false").lower() in (
+    "1",
+    "true",
+    "yes",
+)
+
 # --no-mmap was historically forced on whenever SLOT_SAVE_DIR was set,
 # based on the upstream slot-persistence tutorial
 # (https://github.com/ggml-org/llama.cpp/discussions/20572) which lists
