@@ -122,14 +122,20 @@ class LlamaCppArgumentBuilder:
                 "ctx_size": params.num_ctx or 90000,
                 "batch_size": params.batch_size or 2048,
                 "ubatch_size": params.micro_batch_size or (params.batch_size or 2048),
-                # ctx_checkpoints — number of in-memory KV snapshots per slot.
-                # Each is ~150 MiB on Qwen3-27B Q6, restored on partial-prefix
-                # matches.  llama.cpp default is 8.  We previously hardcoded 32,
-                # which on multi-session workloads triggered ~150 MiB restore
-                # copies every turn (visible in slot logs).  Default to 8 here;
-                # per-model yaml override via ModelParameters.ctx_checkpoints.
+                # ctx_checkpoints — max in-memory KV snapshots per slot. These
+                # SURVIVE slot eviction, so when a session returns and its live
+                # KV is gone (pos_min past the prompt's common prefix), llama.cpp
+                # can RESTORE from the nearest checkpoint instead of re-prefilling
+                # the whole prompt (server-context.cpp: search checkpoints with
+                # pos_min < pos_min_thold; if none -> "forcing full prompt
+                # re-processing"). llama.cpp's real default is 32 (common.h:600);
+                # cutting it to 8 left too few restore points to cover a returning
+                # 190k-token session's divergence, so EVERY turn force-reprocessed
+                # the full prompt (~95s). Restore the 32 default; per-model yaml
+                # override via ModelParameters.ctx_checkpoints. Each snapshot is
+                # ~150 MiB, lazily created and capped at this count.
                 "ctx_checkpoints": (
-                    params.ctx_checkpoints if params.ctx_checkpoints is not None else 8
+                    params.ctx_checkpoints if params.ctx_checkpoints is not None else 32
                 ),
                 "timeout": 600,
                 # context_shift — drop oldest tokens on overflow instead of
