@@ -46,7 +46,7 @@
     # num_ctx 65536 is conservative so the on-GPU KV fits; kv_unified lets the
     # 2 slots share one pool (full ctx each, no fragmentation). If a load OOMs,
     # drop num_ctx (49152 / 32768) before touching parallel.
-    num_ctx: 65536
+    num_ctx: 32768
     repeat_last_n: 64
     repeat_penalty: 1.0
     temperature: 1.0
@@ -57,13 +57,14 @@
     min_p: 0.0
     max_tokens: 16384
     n_parts: -1
-    batch_size: 512
-    micro_batch_size: 256
+    batch_size: 2048
+    micro_batch_size: 2048
     n_gpu_layers: -1
     think: False
     kv_on_cpu: False
     parallel: 2
     kv_unified: True
+    ctx_checkpoints: 32
   pipeline: llama
   lora_weights: []
   provider: llama_cpp

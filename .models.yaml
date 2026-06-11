@@ -142,7 +142,7 @@
     size: 20100000000
     original_ctx: 2048
   parameters:
-    num_ctx: 220000
+    num_ctx: 200000
     repeat_last_n: 128
     repeat_penalty: 1.0
     temperature: 0.60
@@ -448,7 +448,7 @@
     # CUDA0 (RTX 3060, 12 GB) — solo resident, no tensor split.
     # VRAM budget: 7.37 GB weights + 65k q8 KV (~5.2 GB) ≈ 12.6 GB.
     # Tight fit; the runner's --fit auto-reduces ctx if needed.
-    num_ctx: 65536
+    num_ctx: 32768
     repeat_last_n: 64
     repeat_penalty: 1.0
     temperature: 1.0
@@ -459,8 +459,8 @@
     min_p: 0.0
     max_tokens: 16384
     n_parts: -1
-    batch_size: 512
-    micro_batch_size: 256
+    batch_size: 2048
+    micro_batch_size: 2048
     n_gpu_layers: -1
     think: False
     kv_on_cpu: False
