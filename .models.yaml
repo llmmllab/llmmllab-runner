@@ -142,7 +142,17 @@
     size: 20100000000
     original_ctx: 2048
   parameters:
-    num_ctx: 200000
+    # 262144 (256k), raised from 200000 on 2026-06-11. A Claude Code session
+    # whose conversation grew past 200k could never recover: CC's auto-compact
+    # request bundles the WHOLE conversation, so at ~214k it overflowed the
+    # 200k window on prefill, the api's summarize+retry produced a valid summary
+    # but CC's conversation kept growing (~2k tokens/cycle) and re-overflowed —
+    # an unbreakable ~7min/cycle loop. With num_ctx > the conversation size the
+    # request fits, so CC's own compaction request fits and runs normally,
+    # shrinking the conversation. KV lives on GPU1+GPU2 (tensor_split 0,1,1 =
+    # 48GB); model ~20GB leaves room for the larger unified pool. The runner's
+    # --fit may auto-reduce if it doesn't fit — VERIFY the served ctx after deploy.
+    num_ctx: 262144
     repeat_last_n: 128
     repeat_penalty: 1.0
     temperature: 0.60
