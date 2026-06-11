@@ -43,10 +43,15 @@
   parameters:
     # 12 GB RTX 2060, KV ON GPU (kv_on_cpu=False — host-RAM offload OOM-killed
     # the pod cgroup before): ~7.37 GB weights + ~0.12 GB mmproj-F16 + q8 KV.
-    # num_ctx 65536 is conservative so the on-GPU KV fits; kv_unified lets the
-    # 2 slots share one pool (full ctx each, no fragmentation). If a load OOMs,
-    # drop num_ctx (49152 / 32768) before touching parallel.
-    num_ctx: 32768
+    # num_ctx 49152: 7.37 GB weights + ~3.9 GB q8 KV + mmproj ≈ 11.4 GB, fits the
+    # 12 GB card. 65536 (~12.6 GB) OOM'd / got --fit-reduced to 32768, which is
+    # too small for the openclaw main agent's ~33k tool-heavy turns (67 tool defs
+    # + system) -> exceed_context_size_error. kv_unified means the pool IS
+    # num_ctx, so a single turn can use the whole 49152. ctx_size_reduction_limit
+    # floors --fit at ~42k (still > the agent). n_ctx is the KV window, NOT a
+    # speed knob — short turns run the same at 32k or 49k.
+    num_ctx: 49152
+    ctx_size_reduction_limit: 0.85
     repeat_last_n: 64
     repeat_penalty: 1.0
     temperature: 1.0

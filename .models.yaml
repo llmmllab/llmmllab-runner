@@ -446,9 +446,16 @@
     original_ctx: 2048
   parameters:
     # CUDA0 (RTX 3060, 12 GB) — solo resident, no tensor split.
-    # VRAM budget: 7.37 GB weights + 65k q8 KV (~5.2 GB) ≈ 12.6 GB.
-    # Tight fit; the runner's --fit auto-reduces ctx if needed.
-    num_ctx: 32768
+    # VRAM budget: 7.37 GB weights + 48k q8 KV (~3.9 GB) ≈ 11.3 GB — fits.
+    # num_ctx 49152 (was 65536 ≈ 12.6 GB, which OOM'd / got --fit-reduced to
+    # 32768 — too small for the openclaw main agent's ~33k tool-heavy turns:
+    # 67 tool defs + system overflowed 32768 -> exceed_context_size_error).
+    # With --kv-unified the pool IS num_ctx, so a single turn can use the whole
+    # 49152. ctx_size_reduction_limit floors --fit at ~42k (still > the agent)
+    # if VRAM ever tightens. NOTE: n_ctx is the KV WINDOW, not a speed knob —
+    # short turns run identically at 32k or 49k; this only caps the max window.
+    num_ctx: 49152
+    ctx_size_reduction_limit: 0.85
     repeat_last_n: 64
     repeat_penalty: 1.0
     temperature: 1.0
