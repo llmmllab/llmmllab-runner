@@ -158,6 +158,19 @@ spec:
             # side-effects (less host-RAM pressure on model switches).
             - name: SLOT_SAVE_DIR
               value: ""
+            # Re-pin id_slot per session. With pinning OFF, the proxy's SlotLRU
+            # assigns a slot but doesn't inject id_slot, so llama.cpp picks its
+            # OWN slot by LCP similarity and a session drifts across slots turn-
+            # to-turn — it doesn't return to the slot holding its KV, forcing a
+            # full re-prefill, and the proxy slot->session map no longer matches
+            # llama.cpp's actual slot so every processing/decoding log line is
+            # session_id=none. Pinning makes the SlotLRU assignment authoritative:
+            # the session stays on one slot (KV reused) and slot logs attribute
+            # correctly. Trade-off: get_slot_by_id skips the --cache-ram L2 reload
+            # on idle-purge, but the 4 GB L2 can't hold a ~190k-token KV anyway,
+            # so slot drift was the dominant per-turn cost.
+            - name: FORCE_SLOT_PIN
+              value: "true"
             # In-process pipelines (rembg, img23d, mesh2parts) are
             # 6-20 GB resident.  Unload them after each request so
             # other models (llama.cpp Qwen, SD diffusion) aren't
@@ -336,6 +349,19 @@ spec:
             # side-effects (less host-RAM pressure on model switches).
             - name: SLOT_SAVE_DIR
               value: ""
+            # Re-pin id_slot per session. With pinning OFF, the proxy's SlotLRU
+            # assigns a slot but doesn't inject id_slot, so llama.cpp picks its
+            # OWN slot by LCP similarity and a session drifts across slots turn-
+            # to-turn — it doesn't return to the slot holding its KV, forcing a
+            # full re-prefill, and the proxy slot->session map no longer matches
+            # llama.cpp's actual slot so every processing/decoding log line is
+            # session_id=none. Pinning makes the SlotLRU assignment authoritative:
+            # the session stays on one slot (KV reused) and slot logs attribute
+            # correctly. Trade-off: get_slot_by_id skips the --cache-ram L2 reload
+            # on idle-purge, but the 4 GB L2 can't hold a ~190k-token KV anyway,
+            # so slot drift was the dominant per-turn cost.
+            - name: FORCE_SLOT_PIN
+              value: "true"
             # In-process pipelines (rembg, img23d, mesh2parts) are
             # 6-20 GB resident.  Unload them after each request so
             # other models (llama.cpp Qwen, SD diffusion) aren't
