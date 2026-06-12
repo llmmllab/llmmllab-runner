@@ -910,6 +910,20 @@ async def _stream_upstream(
             ),
             stream=True,
         )
+    except httpx.ConnectError as exc:
+        # Server is completely unreachable — remove from cache so subsequent
+        # requests don't keep routing to a dead server.  The API layer will
+        # discover the server is gone and create a fresh one.
+        logger.error(
+            "Upstream server %s error before response: %s (%s)",
+            server_id,
+            exc,
+            type(exc).__name__,
+        )
+        from app import server_cache
+
+        server_cache.remove(server_id)
+        raise
     except httpx.HTTPError as exc:
         logger.error(
             "Upstream server %s error before response: %s (%s)",
@@ -1432,7 +1446,17 @@ async def proxy_request(request: Request, server_id: str, path: str):
             status_code=503,
             detail=f"Upstream server {server_id} disconnected unexpectedly: {exc}",
         )
-    except httpx.ConnectError:
+    except httpx.ConnectError as exc:
+        # Server is completely unreachable — remove from cache so subsequent
+        # requests don't keep routing to a dead server.  The API layer will
+        # discover the server is gone and create a fresh one.
+        logger.error(
+            "Upstream server %s unreachable: %s (%s)",
+            server_id,
+            exc,
+            type(exc).__name__,
+        )
+        server_cache.remove(server_id)
         raise HTTPException(
             status_code=502,
             detail=f"Upstream server {server_id} on port {entry.port} is unreachable",
