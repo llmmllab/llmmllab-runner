@@ -1428,6 +1428,14 @@ async def proxy_request(request: Request, server_id: str, path: str):
             exc,
             type(exc).__name__,
         )
+        # The upstream died mid-request; decrement the use-count so the server
+        # can be evicted and a fresh handle acquired on retry.  Without this,
+        # the use_count stays inflated (streaming requests skip the finally-block
+        # decrement) and the dead server keeps receiving traffic.
+        # Guarded by is_streaming: the non-streaming path's finally block
+        # already decrements correctly for all HTTPError subclasses.
+        if is_streaming:
+            server_cache.decrement_use(server_id)
         raise HTTPException(
             status_code=503,
             detail=f"Upstream server {server_id} disconnected unexpectedly: {exc}",
